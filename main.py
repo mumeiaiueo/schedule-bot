@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import sqlite3
 from datetime import datetime, timedelta
@@ -15,6 +15,9 @@ c = conn.cursor()
 c.execute("CREATE TABLE IF NOT EXISTS slots (time TEXT PRIMARY KEY, user_id TEXT, name TEXT)")
 conn.commit()
 
+last_channel_id = None
+notified = set()
+
 # ===== ボタン =====
 class SlotButton(discord.ui.Button):
     def __init__(self, time):
@@ -22,10 +25,10 @@ class SlotButton(discord.ui.Button):
         row = c.fetchone()
 
         if row:
-            label = f"予約済 {time} ({row[0]})"
+            label = f"{time} ({row[0]})"
             style = discord.ButtonStyle.danger
         else:
-            label = f"空き {time}"
+            label = f"{time} 空き"
             style = discord.ButtonStyle.success
 
         super().__init__(label=label, style=style)
@@ -40,15 +43,15 @@ class SlotButton(discord.ui.Button):
             c.execute("DELETE FROM slots WHERE time=?", (self.time,))
             conn.commit()
 
-            self.label = f"空き {self.time}"
+            self.label = f"{self.time} 空き"
             self.style = discord.ButtonStyle.success
             await interaction.response.edit_message(view=self.view)
-            await interaction.followup.send(f"❌ {interaction.user.mention} が {self.time} をキャンセル")
+            await interaction.followup.send(f"❌ {interaction.user.mention} がキャンセル")
             return
 
         # ===== 他人予約済 =====
         if row:
-            await interaction.response.send_message("❌ すでに予約済み", ephemeral=True)
+            await interaction.response.send_message("❌ 予約済み", ephemeral=True)
             return
 
         # ===== 予約 =====
@@ -58,31 +61,31 @@ class SlotButton(discord.ui.Button):
         )
         conn.commit()
 
-        self.label = f"予約済 {self.time} ({interaction.user.display_name})"
+        self.label = f"{self.time} ({interaction.user.display_name})"
         self.style = discord.ButtonStyle.danger
 
         await interaction.response.edit_message(view=self.view)
-        await interaction.followup.send(f"✅ {interaction.user.mention} が {self.time} を予約しました")
+        await interaction.followup.send(f"✅ {interaction.user.mention} が {self.time} を予約")
 
-
-# ===== View（1列表示）=====
+# ===== View =====
 class SlotView(discord.ui.View):
     def __init__(self, times):
         super().__init__(timeout=None)
         for t in times:
             self.add_item(SlotButton(t))
 
-
-# ===== スケジュール作成 =====
+# ===== schedule =====
 @bot.tree.command(name="schedule")
 @app_commands.checks.has_permissions(administrator=True)
 async def schedule(interaction: discord.Interaction, start: str, end: str, interval: int):
+
+    global last_channel_id
+    last_channel_id = interaction.channel.id
 
     fmt = "%H:%M"
     s = datetime.strptime(start, fmt)
     e = datetime.strptime(end, fmt)
 
-    # 日跨ぎ対応
     if e < s:
         e += timedelta(days=1)
 
@@ -92,7 +95,6 @@ async def schedule(interaction: discord.Interaction, start: str, end: str, inter
         s += timedelta(minutes=interval)
 
     await interaction.response.send_message("予約してください", view=SlotView(times))
-
 
 # ===== 予約一覧 =====
 @bot.tree.command(name="list")
@@ -107,27 +109,7 @@ async def list_slots(interaction: discord.Interaction):
     text = "\n".join([f"{r[0]} → {r[1]}" for r in rows])
     await interaction.response.send_message(text)
 
-
-# ===== 管理者のみ全削除 =====
-@bot.tree.command(name="reset")
-@app_commands.checks.has_permissions(administrator=True)
-async def reset(interaction: discord.Interaction):
-    c.execute("DELETE FROM slots")
-    conn.commit()
-    await interaction.response.send_message("✅ すべての予約を削除しました")
-
-
-
-
-@bot.event
-async def on_ready():
-    await bot.tree.sync()
-    print("ready")
-
-from discord.ext import tasks
-
-notified = set()
-
+# ===== 3分前通知 =====
 @tasks.loop(seconds=30)
 async def reminder():
     now = datetime.now()
@@ -142,5 +124,11 @@ async def reminder():
             if channel:
                 await channel.send(f"<@{uid}> ⏰ {t} の3分前です！")
             notified.add(t)
+
+@bot.event
+async def on_ready():
+    await bot.tree.sync()
+    reminder.start()
+    print("ready")
 
 bot.run(TOKEN)
