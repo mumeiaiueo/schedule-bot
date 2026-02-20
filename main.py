@@ -28,7 +28,44 @@ class TimeButton(discord.ui.Button):
         super().__init__(label=time,row=0,style=discord.ButtonStyle.primary)
         self.time=time
 
-    async def callback(self,interaction:discord.Interaction):
+    async def async def callback(self,interaction:discord.Interaction):
+    uid=str(interaction.user.id)
+
+    # その時間の予約取得
+    c.execute("SELECT user_id FROM schedule WHERE time=?",(self.time,))
+    row=c.fetchone()
+
+    log=get_log()
+    log_ch=interaction.guild.get_channel(log) if log else None
+
+    # ===== 予約なし =====
+    if not row:
+        c.execute("INSERT INTO schedule VALUES (?,?)",(self.time,uid))
+        conn.commit()
+
+        self.label=f"{self.time} ({interaction.user.display_name})"
+        self.style=discord.ButtonStyle.success
+
+        if log_ch:
+            await log_ch.send(f"{interaction.user.mention} が {self.time} 予約")
+
+    # ===== 本人ならキャンセル =====
+    elif row[0]==uid:
+        c.execute("DELETE FROM schedule WHERE time=?",(self.time,))
+        conn.commit()
+
+        self.label=self.time
+        self.style=discord.ButtonStyle.primary
+
+        if log_ch:
+            await log_ch.send(f"{interaction.user.mention} が {self.time} キャンセル")
+
+    # ===== 他人が予約済み =====
+    else:
+        await interaction.response.send_message("すでに予約済み",ephemeral=True)
+        return
+
+    await interaction.response.edit_message(view=self.view)(self,interaction:discord.Interaction):
         uid=str(interaction.user.id)
 
         c.execute("SELECT * FROM schedule WHERE time=? AND user_id=?",(self.time,uid))
