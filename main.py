@@ -117,9 +117,30 @@ async def reset(interaction: discord.Interaction):
     await interaction.response.send_message("✅ すべての予約を削除しました")
 
 
+
+
 @bot.event
 async def on_ready():
     await bot.tree.sync()
     print("ready")
+
+from discord.ext import tasks
+
+notified = set()
+
+@tasks.loop(seconds=30)
+async def reminder():
+    now = datetime.now()
+    target = (now + timedelta(minutes=3)).strftime("%H:%M")
+
+    c.execute("SELECT time,user_id FROM slots")
+    rows = c.fetchall()
+
+    for t, uid in rows:
+        if t == target and t not in notified:
+            channel = bot.get_channel(last_channel_id)
+            if channel:
+                await channel.send(f"<@{uid}> ⏰ {t} の3分前です！")
+            notified.add(t)
 
 bot.run(TOKEN)
