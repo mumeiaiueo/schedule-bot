@@ -4,78 +4,188 @@ from discord import app_commands
 import sqlite3
 from datetime import datetime, timedelta
 import os
+
 TOKEN = os.environ["TOKEN"]
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ===== DB =====
 conn = sqlite3.connect("schedule.db")
 c = conn.cursor()
-c.execute("""CREATE TABLE IF NOT EXISTS slots
-(time TEXT PRIMARY KEY, user_id TEXT)""")
+c.execute("CREATE TABLE IF NOT EXISTS reservations(time TEXT PRIMARY KEY, user_id TEXT)")
+c.execute("CREATE TABLE IF NOT EXISTS logs(action TEXT, time TEXT, user_id TEXT, date TEXT)")
 conn.commit()
 
-class SlotButton(discord.ui.Button):
-    def __init__(self, time):
-        super().__init__(label=time, style=discord.ButtonStyle.primary)
+# ===== 自動削除 =====
+@tasks.loop(minutes=1)
+async def auto_delete():
+    now = datetime.now().strftime("%H:%M")
+    c.execute("DELETE FROM reservations WHERE time<?", (now,))
+    conn.commit()
+
+# ===== ボタン =====
+class ReserveButton(discord.ui.Button):
+    def __init__(self, time, row):
+        c.execute("SELECT user_id FROM reservations WHERE time=?", (time,))
+        data = c.fetchone()
+
+        if data:
+            user = bot.get_user(int(data[0]))
+            label = f"{time} {user.name if user else '予約'}"
+            style = discord.ButtonStyle.gray
+            disabled = False
+        else:
+            label = time
+            style = discord.ButtonStyle.green
+            disabled = False
+
+        super().__init__(label=label, style=style, disabled=disabled, row=row)
         self.time = time
 
     async def callback(self, interaction: discord.Interaction):
-        c.execute("SELECT user_id FROM slots WHERE time=?", (self.time,))
-        row = c.fetchone()
+        c.execute("SELECT user_id FROM reservations WHERE time=?", (self.time,))
+        data = c.fetchone()
 
-        if row is None:
-            c.execute("INSERT INTO slots VALUES (?,?)", (self.time, str(interaction.user.id)))
-            conn.commit()
-            await interaction.response.send_message(f"{self.time} を予約しました", ephemeral=True)
+        # ===== 既予約 =====
+        if data:
+            # 本人 or 管理者なら変更
+            if str(interaction.user.id) == data[0] or interaction.user.guild_permissions.administrator:
+                c.execute("DELETE FROM reservations WHERE time=?", (self.time,))
+                conn.commit()
 
-        elif row[0] == str(interaction.user.id):
-            c.execute("DELETE FROM slots WHERE time=?", (self.time,))
-            conn.commit()
-            await interaction.response.send_message(f"{self.time} をキャンセルしました", ephemeral=True)
+                c.execute("INSERT INTO logs VALUES (?,?,?,?)",
+                          ("cancel", self.time, str(interaction.user.id), str(datetime.now())))
+                conn.commit()
 
-        else:
-            await interaction.response.send_message("すでに予約済み", ephemeral=True)
+                self.label = self.time
+                self.style = discord.ButtonStyle.green
+                await interaction.response.edit_message(view=self.view)
+                await interaction.followup.send("キャンセルしました", ephemeral=True)
+            else:
+                await interaction.response.send_message("予約済み", ephemeral=True)
+            return
 
-class SlotView(discord.ui.View):
-    def __init__(self, times):
+        # ===== 新規予約 =====
+        c.execute("INSERT INTO reservations VALUES (?,?)", (self.time, str(interaction.user.id)))
+        conn.commit()
+
+        c.execute("INSERT INTO logs VALUES (?,?,?,?)",
+                  ("reserve", self.time, str(interaction.user.id), str(datetime.now())))
+        conn.commit()
+
+        self.label = f"{self.time} {interaction.user.name}"
+        self.style = discord.ButtonStyle.gray
+
+        await interaction.response.edit_message(view=self.view)
+        await interaction.followup.send(f"{interaction.user.mention} が {self.time} 予約")
+
+# ===== ページ送り =====
+class NextButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="▶", style=discord.ButtonStyle.blurple)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = ReserveView(self.view.times, self.view.page + 1)
+        await interaction.response.edit_message(view=view)
+
+class PrevButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="◀", style=discord.ButtonStyle.blurple)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = ReserveView(self.view.times, self.view.page - 1)
+        await interaction.response.edit_message(view=view)
+
+# ===== View =====
+class ReserveView(discord.ui.View):
+    def __init__(self, times, page=0):
         super().__init__(timeout=None)
-        for t in times:
-            self.add_item(SlotButton(t))
+        self.times = times
+        self.page = page
 
+        start = page * 5
+        end = start + 5
+        page_times = times[start:end]
+
+        row = 0
+        for t in page_times:
+            self.add_item(ReserveButton(t, row))
+            row += 1
+
+        if page > 0:
+            self.add_item(PrevButton())
+
+        if end < len(times):
+            self.add_item(NextButton())
+
+# ===== schedule =====
 @bot.tree.command(name="schedule")
-@app_commands.checks.has_permissions(administrator=True)
 async def schedule(interaction: discord.Interaction, start: str, end: str, interval: int):
-    fmt = "%H:%M"
-    s = datetime.strptime(start, fmt)
-    e = datetime.strptime(end, fmt)
+    s = datetime.strptime(start, "%H:%M")
+    e = datetime.strptime(end, "%H:%M")
+
+    if e <= s:
+        e += timedelta(days=1)
 
     times = []
     while s <= e:
-        times.append(s.strftime(fmt))
+        times.append(s.strftime("%H:%M"))
         s += timedelta(minutes=interval)
 
-    await interaction.response.send_message("予約してください", view=SlotView(times))
+    await interaction.response.send_message("予約してください", view=ReserveView(times))
 
-@tasks.loop(seconds=30)
-async def reminder():
-    now = datetime.now().strftime("%H:%M")
-    target = (datetime.now()+timedelta(minutes=3)).strftime("%H:%M")
-
-    c.execute("SELECT user_id FROM slots WHERE time=?", (target,))
+# ===== 予約一覧 =====
+@bot.tree.command(name="予約一覧")
+async def list_reserve(interaction: discord.Interaction):
+    c.execute("SELECT * FROM reservations ORDER BY time")
     rows = c.fetchall()
-    for r in rows:
-        user = await bot.fetch_user(int(r[0]))
-        try:
-            await user.send(f"{target} の3分前です！")
-        except:
-            pass
 
+    if not rows:
+        await interaction.response.send_message("予約なし")
+        return
+
+    msg = ""
+    for t, u in rows:
+        user = await bot.fetch_user(int(u))
+        msg += f"{t} {user.name}\n"
+
+    await interaction.response.send_message(msg)
+
+# ===== 履歴 =====
+@bot.tree.command(name="履歴")
+async def history(interaction: discord.Interaction):
+    c.execute("SELECT * FROM logs ORDER BY date DESC LIMIT 20")
+    rows = c.fetchall()
+
+    if not rows:
+        await interaction.response.send_message("履歴なし")
+        return
+
+    msg = ""
+    for a, t, u, d in rows:
+        user = await bot.fetch_user(int(u))
+        msg += f"{a} {t} {user.name} {d}\n"
+
+    await interaction.response.send_message(msg)
+
+# ===== 強制予約 =====
+@bot.tree.command(name="強制予約")
+async def force(interaction: discord.Interaction, time: str, user: discord.Member):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("管理者のみ", ephemeral=True)
+        return
+
+    c.execute("INSERT OR REPLACE INTO reservations VALUES (?,?)", (time, str(user.id)))
+    conn.commit()
+    await interaction.response.send_message("強制予約完了")
+
+# ===== 起動 =====
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    reminder.start()
-    print("ready")
+    auto_delete.start()
+    print("起動")
 
 bot.run(TOKEN)
