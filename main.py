@@ -1,11 +1,20 @@
+import os
 import discord
-from discord.ext import commands
+import asyncpg
+import pytz
+from discord.ext import commands, tasks
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
-intents = discord.Intents.default()
-intents.message_content = True
+load_dotenv()
+
+TOKEN = os.getenv("TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
-
+tree = bot.tree
+JST = pytz.timezone("Asia/Tokyo")
 # 予約データ
 reservations = {}
 
