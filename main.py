@@ -1,182 +1,164 @@
 import discord
-from discord.ext import commands, tasks
 from discord import app_commands
-from datetime import datetime, timedelta
+from discord.ext import commands, tasks
 import asyncpg
-import os
+from datetime import datetime, timedelta
 
-TOKEN = os.getenv("TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+TOKEN = "BOT_TOKEN"
+DATABASE_URL = "DATABASE_URL"
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-# ---------- DB ----------
-async def create_db():
-    return await asyncpg.create_pool(DATABASE_URL)
+# ---------------- DB ----------------
+@bot.event
+async def on_ready():
+    bot.pool = await asyncpg.create_pool(DATABASE_URL)
+    await tree.sync()
+    reminder.start()
+    print("起動")
 
-# ---------- SLOT ----------
-def create_slots(start_str, end_str, minutes):
-    start = datetime.strptime(start_str, "%H:%M")
-    end = datetime.strptime(end_str, "%H:%M")
+# ---------------- 枠生成 ----------------
+def create_slots(start, end, minutes):
+    fmt = "%H:%M"
+    s = datetime.strptime(start, fmt)
+    e = datetime.strptime(end, fmt)
 
     slots = []
-    cur = start
-    while cur < end:
-        nxt = cur + timedelta(minutes=minutes)
-        if nxt > end:
-            break
-        slots.append(f"{cur.strftime('%H:%M')}〜{nxt.strftime('%H:%M')}")
-        cur = nxt
+    while s < e:
+        n = s + timedelta(minutes=minutes)
+        slots.append(f"{s.strftime(fmt)}〜{n.strftime(fmt)}")
+        s = n
     return slots
 
-# ---------- BUTTON ----------
+# ---------------- ボタン ----------------
 class SlotButton(discord.ui.Button):
-    def __init__(self, label):
-        super().__init__(label=label, style=discord.ButtonStyle.primary)
+    def __init__(self, slot, reserved_user=None):
+        self.slot = slot
+        self.reserved_user = reserved_user
+
+        if reserved_user:
+            label = f"🔴 {slot}"
+            style = discord.ButtonStyle.danger
+        else:
+            label = f"🟢 {slot}"
+            style = discord.ButtonStyle.success
+
+        super().__init__(label=label, style=style)
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        slot = self.label
-        user = str(interaction.user.id)
-        server = str(interaction.guild.id)
-
-        try:
-            async with bot.pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO reserve(server_id, slot, user_id) VALUES($1,$2,$3)",
-                    server, slot, user
-                )
-
-            self.disabled = True
-            self.label = f"🔒 {slot}"
-            self.style = discord.ButtonStyle.secondary
-
-            await interaction.message.edit(view=self.view)
-            await interaction.followup.send("予約完了", ephemeral=True)
-
-        except:
-            await interaction.followup.send("この枠は埋まっています", ephemeral=True)
-
-class CancelButton(discord.ui.Button):
-    def __init__(self, label):
-        super().__init__(label=f"❌ {label}", style=discord.ButtonStyle.danger)
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-
-        slot = self.label.replace("❌ ", "")
-        user = str(interaction.user.id)
+        user_id = str(interaction.user.id)
         server = str(interaction.guild.id)
 
         async with bot.pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM reserve WHERE server_id=$1 AND slot=$2 AND user_id=$3",
-                server, slot, user
+            row = await conn.fetchrow(
+                "SELECT user_id FROM reserve WHERE server_id=$1 AND slot=$2",
+                server, self.slot
             )
 
-        for item in self.view.children:
-            if isinstance(item, SlotButton) and slot in item.label:
-                item.disabled = False
-                item.label = slot
-                item.style = discord.ButtonStyle.primary
+            # 予約
+            if not row:
+                await conn.execute(
+                    """INSERT INTO reserve(server_id, slot, user_id, reminded)
+                       VALUES($1,$2,$3,FALSE)""",
+                    server, self.slot, user_id
+                )
 
-        await interaction.message.edit(view=self.view)
-        await interaction.followup.send("キャンセルしました", ephemeral=True)
+                self.label = f"🔴 {self.slot}"
+                self.style = discord.ButtonStyle.danger
 
+                await interaction.message.edit(view=self.view)
+                await interaction.followup.send("予約完了", ephemeral=True)
+
+            # キャンセル
+            elif row["user_id"] == user_id:
+                await conn.execute(
+                    "DELETE FROM reserve WHERE server_id=$1 AND slot=$2",
+                    server, self.slot
+                )
+
+                self.label = f"🟢 {self.slot}"
+                self.style = discord.ButtonStyle.success
+
+                await interaction.message.edit(view=self.view)
+                await interaction.followup.send("キャンセルしました", ephemeral=True)
+
+            else:
+                await interaction.followup.send("すでに予約されています", ephemeral=True)
+
+# ---------------- View ----------------
 class SlotView(discord.ui.View):
-    def __init__(self, slots):
+    def __init__(self, slots, reserves):
         super().__init__(timeout=None)
-        for s in slots:
-            self.add_item(SlotButton(s))
-            self.add_item(CancelButton(s))
+        reserve_map = {r["slot"]: r["user_id"] for r in reserves}
 
-# ---------- SLASH ----------
+        for s in slots:
+            user = reserve_map.get(s)
+            self.add_item(SlotButton(s, user))
+
+# ---------------- create（通知チャンネル指定）----------------
 @tree.command(name="create", description="予約枠作成")
-@app_commands.choices(minutes=[
-    app_commands.Choice(name="20分", value=20),
-    app_commands.Choice(name="25分", value=25),
-    app_commands.Choice(name="30分", value=30),
-])
-async def create(interaction: discord.Interaction, start: str, end: str, minutes: app_commands.Choice[int]):
+async def create(
+    interaction: discord.Interaction,
+    start: str,
+    end: str,
+    minutes: int,
+    notify_channel: discord.TextChannel
+):
     await interaction.response.defer()
 
-    slots = create_slots(start, end, minutes.value)
-    view = SlotView(slots)
-
-    await interaction.followup.send("予約してください", view=view)
-
-@tree.command(name="notifyset", description="通知チャンネル設定")
-@app_commands.checks.has_permissions(administrator=True)
-async def notifyset(interaction: discord.Interaction, channel: discord.TextChannel):
-    await interaction.response.defer(ephemeral=True)
-
+    slots = create_slots(start, end, minutes)
     server = str(interaction.guild.id)
 
     async with bot.pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO guild_settings(server_id, notify_channel)
-            VALUES($1,$2)
-            ON CONFLICT(server_id)
-            DO UPDATE SET notify_channel=$2
-        """, server, str(channel.id))
+        # 枠をDBに保存（通知チャンネルも保存）
+        for s in slots:
+            await conn.execute("""
+            INSERT INTO reserve(server_id, slot, user_id, notify_channel, reminded)
+            VALUES($1,$2,NULL,$3,FALSE)
+            ON CONFLICT DO NOTHING
+            """, server, s, str(notify_channel.id))
 
-    await interaction.followup.send("設定完了", ephemeral=True)
-
-@tree.command(name="myreserve", description="自分の予約")
-async def myreserve(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-
-    user = str(interaction.user.id)
-    server = str(interaction.guild.id)
-
-    async with bot.pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT slot FROM reserve WHERE server_id=$1 AND user_id=$2",
-            server, user
+        reserves = await conn.fetch(
+            "SELECT slot, user_id FROM reserve WHERE server_id=$1",
+            server
         )
 
-    text = "予約なし" if not rows else "\n".join([r["slot"] for r in rows])
-    await interaction.followup.send(text, ephemeral=True)
+    view = SlotView(slots, reserves)
+    await interaction.followup.send("予約してください", view=view)
 
-# ---------- REMIND ----------
-@tasks.loop(seconds=60)
-async def remind():
+# ---------------- 3分前通知（別チャンネル送信）----------------
+@tasks.loop(minutes=1)
+async def reminder():
     now = datetime.now()
 
     async with bot.pool.acquire() as conn:
-        rows = await conn.fetch("SELECT * FROM reserve")
+        rows = await conn.fetch("""
+        SELECT server_id, slot, user_id, notify_channel, reminded
+        FROM reserve
+        WHERE user_id IS NOT NULL AND reminded=FALSE
+        """)
 
-    for row in rows:
-        slot = row["slot"]
-        user = row["user_id"]
-        server = row["server_id"]
+        for r in rows:
+            slot_time = datetime.strptime(r["slot"][:5], "%H:%M")
+            slot_time = slot_time.replace(
+                year=now.year, month=now.month, day=now.day
+            )
 
-        start = slot.split("〜")[0]
-        notify_time = datetime.strptime(start, "%H:%M") - timedelta(minutes=3)
+            diff = (slot_time - now).total_seconds()
 
-        if notify_time.strftime("%H:%M") == now.strftime("%H:%M"):
+            if 0 < diff <= 180:
+                ch = bot.get_channel(int(r["notify_channel"]))
+                if ch:
+                    await ch.send(f"<@{r['user_id']}> 3分後に {r['slot']} 開始")
 
-            async with bot.pool.acquire() as conn:
-                setting = await conn.fetchrow(
-                    "SELECT notify_channel FROM guild_settings WHERE server_id=$1",
-                    server
-                )
-
-            if setting:
-                channel = bot.get_channel(int(setting["notify_channel"]))
-                if channel:
-                    await channel.send(f"<@{user}> さん 3分前です")
-
-# ---------- READY ----------
-@bot.event
-async def on_ready():
-    bot.pool = await create_db()
-    bot.add_view(SlotView([]))
-    await tree.sync()
-    remind.start()
-    print("READY")
+                    await conn.execute("""
+                    UPDATE reserve
+                    SET reminded=TRUE
+                    WHERE server_id=$1 AND slot=$2
+                    """, r["server_id"], r["slot"])
 
 bot.run(TOKEN)
