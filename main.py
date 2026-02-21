@@ -1,11 +1,10 @@
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-import asyncpg
-from datetime import datetime, timedelta
+import os
 
-TOKEN = "BOT_TOKEN"
-DATABASE_URL = "DATABASE_URL"
+TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
