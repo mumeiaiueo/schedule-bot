@@ -3,12 +3,10 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from datetime import datetime, timedelta
 import asyncpg
+import os
 
-TOKEN = "TOKEN"
-DB_USER = "user"
-DB_PASS = "pass"
-DB_NAME = "db"
-DB_HOST = "localhost"
+TOKEN = os.getenv("TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -16,12 +14,7 @@ tree = bot.tree
 
 # ---------- DB ----------
 async def create_db():
-    return await asyncpg.create_pool(
-        user=DB_USER,
-        password=DB_PASS,
-        database=DB_NAME,
-        host=DB_HOST
-    )
+    return await asyncpg.create_pool(DATABASE_URL)
 
 # ---------- SLOT ----------
 def create_slots(start_str, end_str, minutes):
@@ -163,7 +156,8 @@ async def remind():
 
             if setting:
                 channel = bot.get_channel(int(setting["notify_channel"]))
-                await channel.send(f"<@{user}> さん 3分前です")
+                if channel:
+                    await channel.send(f"<@{user}> さん 3分前です")
 
 # ---------- READY ----------
 @bot.event
