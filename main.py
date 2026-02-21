@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import asyncpg
 import os
 
+# ---------- ENV ----------
 TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -44,7 +45,11 @@ class SlotButton(discord.ui.Button):
         try:
             async with bot.pool.acquire() as conn:
                 await conn.execute(
-                    "INSERT INTO reserve(server_id, slot, user_id) VALUES($1,$2,$3)",
+                    """
+                    INSERT INTO reserve(server_id, slot, user_id)
+                    VALUES($1,$2,$3)
+                    ON CONFLICT(server_id, slot) DO NOTHING
+                    """,
                     server, slot, user
                 )
 
