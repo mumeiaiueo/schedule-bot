@@ -13,10 +13,32 @@ tree = bot.tree
 
 # ---------------- DB ----------------
 @bot.event
+
+@bot.event
 async def on_ready():
     bot.pool = await asyncpg.create_pool(DATABASE_URL)
+
+    async with bot.pool.acquire() as conn:
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS reserve(
+            server_id TEXT,
+            slot TEXT,
+            user_id TEXT,
+            notify_channel TEXT,
+            reminded BOOLEAN DEFAULT FALSE
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS guild_settings(
+            server_id TEXT PRIMARY KEY,
+            notify_channel TEXT
+        );
+        """)
+
     await tree.sync()
     reminder.start()
+    cleanup.start()
     print("起動")
 
 # ---------------- 枠生成 ----------------
@@ -31,6 +53,20 @@ def create_slots(start, end, minutes):
         slots.append(f"{s.strftime(fmt)}〜{n.strftime(fmt)}")
         s = n
     return slots
+
+# ---------------- 通知チャンネル保存（②）----------------
+@tree.command(name="notifyset", description="通知チャンネル設定")
+@app_commands.checks.has_permissions(administrator=True)
+async def notifyset(interaction: discord.Interaction, channel: discord.TextChannel):
+    async with bot.pool.acquire() as conn:
+        await conn.execute("""
+        INSERT INTO guild_settings(server_id, notify_channel)
+        VALUES($1,$2)
+        ON CONFLICT(server_id)
+        DO UPDATE SET notify_channel=$2
+        """, str(interaction.guild.id), str(channel.id))
+
+    await interaction.response.send_message("通知チャンネル設定完了", ephemeral=True)
 
 # ---------------- ボタン ----------------
 class SlotButton(discord.ui.Button):
@@ -59,30 +95,27 @@ class SlotButton(discord.ui.Button):
                 server, self.slot
             )
 
-            # 予約
             if not row:
                 await conn.execute(
-                    """INSERT INTO reserve(server_id, slot, user_id, reminded)
-                       VALUES($1,$2,$3,FALSE)""",
-                    server, self.slot, user_id
+                    """UPDATE reserve SET user_id=$1, reminded=FALSE
+                       WHERE server_id=$2 AND slot=$3""",
+                    user_id, server, self.slot
                 )
 
                 self.label = f"🔴 {self.slot}"
                 self.style = discord.ButtonStyle.danger
-
                 await interaction.message.edit(view=self.view)
                 await interaction.followup.send("予約完了", ephemeral=True)
 
-            # キャンセル
             elif row["user_id"] == user_id:
                 await conn.execute(
-                    "DELETE FROM reserve WHERE server_id=$1 AND slot=$2",
+                    """UPDATE reserve SET user_id=NULL, reminded=FALSE
+                       WHERE server_id=$1 AND slot=$2""",
                     server, self.slot
                 )
 
                 self.label = f"🟢 {self.slot}"
                 self.style = discord.ButtonStyle.success
-
                 await interaction.message.edit(view=self.view)
                 await interaction.followup.send("キャンセルしました", ephemeral=True)
 
@@ -96,31 +129,35 @@ class SlotView(discord.ui.View):
         reserve_map = {r["slot"]: r["user_id"] for r in reserves}
 
         for s in slots:
-            user = reserve_map.get(s)
-            self.add_item(SlotButton(s, user))
+            self.add_item(SlotButton(s, reserve_map.get(s)))
 
-# ---------------- create（通知チャンネル指定）----------------
+# ---------------- create ----------------
 @tree.command(name="create", description="予約枠作成")
-async def create(
-    interaction: discord.Interaction,
-    start: str,
-    end: str,
-    minutes: int,
-    notify_channel: discord.TextChannel
-):
+async def create(interaction: discord.Interaction, start: str, end: str, minutes: int):
     await interaction.response.defer()
 
     slots = create_slots(start, end, minutes)
     server = str(interaction.guild.id)
 
     async with bot.pool.acquire() as conn:
-        # 枠をDBに保存（通知チャンネルも保存）
+        # 通知チャンネル取得
+        setting = await conn.fetchrow(
+            "SELECT notify_channel FROM guild_settings WHERE server_id=$1",
+            server
+        )
+
+        if not setting:
+            await interaction.followup.send("先に /notifyset をしてください")
+            return
+
+        notify_channel = setting["notify_channel"]
+
         for s in slots:
             await conn.execute("""
             INSERT INTO reserve(server_id, slot, user_id, notify_channel, reminded)
             VALUES($1,$2,NULL,$3,FALSE)
             ON CONFLICT DO NOTHING
-            """, server, s, str(notify_channel.id))
+            """, server, s, notify_channel)
 
         reserves = await conn.fetch(
             "SELECT slot, user_id FROM reserve WHERE server_id=$1",
@@ -130,7 +167,7 @@ async def create(
     view = SlotView(slots, reserves)
     await interaction.followup.send("予約してください", view=view)
 
-# ---------------- 3分前通知（別チャンネル送信）----------------
+# ---------------- 3分前通知 ----------------
 @tasks.loop(minutes=1)
 async def reminder():
     now = datetime.now()
@@ -148,17 +185,34 @@ async def reminder():
                 year=now.year, month=now.month, day=now.day
             )
 
-            diff = (slot_time - now).total_seconds()
-
-            if 0 < diff <= 180:
+            if 0 < (slot_time - now).total_seconds() <= 180:
                 ch = bot.get_channel(int(r["notify_channel"]))
                 if ch:
                     await ch.send(f"<@{r['user_id']}> 3分後に {r['slot']} 開始")
 
                     await conn.execute("""
-                    UPDATE reserve
-                    SET reminded=TRUE
+                    UPDATE reserve SET reminded=TRUE
                     WHERE server_id=$1 AND slot=$2
                     """, r["server_id"], r["slot"])
+
+# ---------------- 自動削除（⑤）----------------
+@tasks.loop(minutes=1)
+async def cleanup():
+    now = datetime.now()
+
+    async with bot.pool.acquire() as conn:
+        rows = await conn.fetch("SELECT server_id, slot FROM reserve")
+
+        for r in rows:
+            end_time = datetime.strptime(r["slot"][-5:], "%H:%M")
+            end_time = end_time.replace(
+                year=now.year, month=now.month, day=now.day
+            )
+
+            if now > end_time:
+                await conn.execute("""
+                DELETE FROM reserve
+                WHERE server_id=$1 AND slot=$2
+                """, r["server_id"], r["slot"])
 
 bot.run(TOKEN)
