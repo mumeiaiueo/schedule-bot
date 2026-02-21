@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 import asyncpg
 import os
 
-# ===== ENV =====
 TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -15,28 +14,7 @@ tree = bot.tree
 
 # ---------- DB ----------
 async def create_db():
-    pool = await asyncpg.create_pool(dsn=DATABASE_URL)
-
-    # テーブル自動作成
-    async with pool.acquire() as conn:
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS reserve(
-            id SERIAL PRIMARY KEY,
-            server_id TEXT,
-            slot TEXT,
-            user_id TEXT,
-            UNIQUE(server_id, slot)
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS guild_settings(
-            server_id TEXT PRIMARY KEY,
-            notify_channel TEXT
-        );
-        """)
-
-    return pool
+    return await asyncpg.create_pool(DATABASE_URL)
 
 # ---------- SLOT ----------
 def create_slots(start_str, end_str, minutes):
@@ -59,6 +37,8 @@ class SlotButton(discord.ui.Button):
         super().__init__(label=label, style=discord.ButtonStyle.primary)
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
         slot = self.label
         user = str(interaction.user.id)
         server = str(interaction.guild.id)
@@ -74,17 +54,19 @@ class SlotButton(discord.ui.Button):
             self.label = f"🔒 {slot}"
             self.style = discord.ButtonStyle.secondary
 
-            await interaction.response.edit_message(view=self.view)
+            await interaction.message.edit(view=self.view)
             await interaction.followup.send("予約完了", ephemeral=True)
 
         except:
-            await interaction.response.send_message("この枠は埋まっています", ephemeral=True)
+            await interaction.followup.send("この枠は埋まっています", ephemeral=True)
 
 class CancelButton(discord.ui.Button):
     def __init__(self, label):
         super().__init__(label=f"❌ {label}", style=discord.ButtonStyle.danger)
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
         slot = self.label.replace("❌ ", "")
         user = str(interaction.user.id)
         server = str(interaction.guild.id)
@@ -101,7 +83,7 @@ class CancelButton(discord.ui.Button):
                 item.label = slot
                 item.style = discord.ButtonStyle.primary
 
-        await interaction.response.edit_message(view=self.view)
+        await interaction.message.edit(view=self.view)
         await interaction.followup.send("キャンセルしました", ephemeral=True)
 
 class SlotView(discord.ui.View):
@@ -119,24 +101,45 @@ class SlotView(discord.ui.View):
     app_commands.Choice(name="30分", value=30),
 ])
 async def create(interaction: discord.Interaction, start: str, end: str, minutes: app_commands.Choice[int]):
+    await interaction.response.defer()
+
     slots = create_slots(start, end, minutes.value)
     view = SlotView(slots)
-    await interaction.response.send_message("予約してください", view=view)
+
+    await interaction.followup.send("予約してください", view=view)
 
 @tree.command(name="notifyset", description="通知チャンネル設定")
 @app_commands.checks.has_permissions(administrator=True)
 async def notifyset(interaction: discord.Interaction, channel: discord.TextChannel):
+    await interaction.response.defer(ephemeral=True)
+
     server = str(interaction.guild.id)
 
     async with bot.pool.acquire() as conn:
         await conn.execute("""
-        INSERT INTO guild_settings(server_id, notify_channel)
-        VALUES($1,$2)
-        ON CONFLICT(server_id)
-        DO UPDATE SET notify_channel=$2
+            INSERT INTO guild_settings(server_id, notify_channel)
+            VALUES($1,$2)
+            ON CONFLICT(server_id)
+            DO UPDATE SET notify_channel=$2
         """, server, str(channel.id))
 
-    await interaction.response.send_message("設定完了", ephemeral=True)
+    await interaction.followup.send("設定完了", ephemeral=True)
+
+@tree.command(name="myreserve", description="自分の予約")
+async def myreserve(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    user = str(interaction.user.id)
+    server = str(interaction.guild.id)
+
+    async with bot.pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT slot FROM reserve WHERE server_id=$1 AND user_id=$2",
+            server, user
+        )
+
+    text = "予約なし" if not rows else "\n".join([r["slot"] for r in rows])
+    await interaction.followup.send(text, ephemeral=True)
 
 # ---------- REMIND ----------
 @tasks.loop(seconds=60)
@@ -155,6 +158,7 @@ async def remind():
         notify_time = datetime.strptime(start, "%H:%M") - timedelta(minutes=3)
 
         if notify_time.strftime("%H:%M") == now.strftime("%H:%M"):
+
             async with bot.pool.acquire() as conn:
                 setting = await conn.fetchrow(
                     "SELECT notify_channel FROM guild_settings WHERE server_id=$1",
