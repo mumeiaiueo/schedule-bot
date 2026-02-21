@@ -5,14 +5,8 @@ from datetime import datetime, timedelta
 import asyncpg
 import os
 
-# ===== Railway環境変数 =====
 TOKEN = os.getenv("TOKEN")
-
-DB_USER = os.getenv("PGUSER")
-DB_PASS = os.getenv("PGPASSWORD")
-DB_NAME = os.getenv("PGDATABASE")
-DB_HOST = os.getenv("PGHOST")
-DB_PORT = os.getenv("PGPORT")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -20,13 +14,7 @@ tree = bot.tree
 
 # ---------- DB ----------
 async def create_db():
-    return await asyncpg.create_pool(
-        user=DB_USER,
-        password=DB_PASS,
-        database=DB_NAME,
-        host=DB_HOST,
-        port=DB_PORT
-    )
+    return await asyncpg.create_pool(DATABASE_URL)
 
 # ---------- SLOT ----------
 def create_slots(start_str, end_str, minutes):
@@ -42,7 +30,6 @@ def create_slots(start_str, end_str, minutes):
         slots.append(f"{cur.strftime('%H:%M')}〜{nxt.strftime('%H:%M')}")
         cur = nxt
     return slots
-
 # ---------- BUTTON ----------
 class SlotButton(discord.ui.Button):
     def __init__(self, label):
