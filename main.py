@@ -3,6 +3,7 @@ import discord
 import asyncpg
 import pytz
 from discord.ext import commands, tasks
+from discord import app_commands
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -59,31 +60,59 @@ async def notifyset(interaction: discord.Interaction, channel: discord.TextChann
 
     await interaction.followup.send("通知チャンネル設定完了")
 
-# ===== 予約作成 =====
+# ===== 予約枠生成（間隔付き）=====
 @tree.command(name="create")
-async def create(interaction: discord.Interaction, start: str, end: str):
+@app_commands.describe(
+    start="開始 2026-02-22 18:00",
+    end="終了 2026-02-22 23:00",
+    interval="20 / 25 / 30"
+)
+async def create(
+    interaction: discord.Interaction,
+    start: str,
+    end: str,
+    interval: int
+):
     await interaction.response.defer()
 
-    start_dt = JST.localize(datetime.strptime(start, "%Y-%m-%d %H:%M"))
-    end_dt = JST.localize(datetime.strptime(end, "%Y-%m-%d %H:%M"))
+    if interval not in [20, 25, 30]:
+        await interaction.followup.send("間隔は 20 / 25 / 30 のみ")
+        return
+
+    try:
+        start_dt = JST.localize(datetime.strptime(start, "%Y-%m-%d %H:%M"))
+        end_dt = JST.localize(datetime.strptime(end, "%Y-%m-%d %H:%M"))
+    except:
+        await interaction.followup.send("形式: 2026-02-22 18:00")
+        return
+
+    # ⭐ 日付またぎ
+    if end_dt <= start_dt:
+        end_dt += timedelta(days=1)
+
+    created = 0
+    cur = start_dt
 
     async with bot.pool.acquire() as conn:
-        overlap = await conn.fetchrow("""
-        SELECT * FROM reserve
-        WHERE guild_id=$1
-        AND NOT ($3 <= start_at OR $2 >= end_at)
-        """, interaction.guild.id, start_dt, end_dt)
+        while cur < end_dt:
+            nxt = cur + timedelta(minutes=interval)
 
-        if overlap:
-            await interaction.followup.send("重複予約あり")
-            return
+            overlap = await conn.fetchrow("""
+            SELECT 1 FROM reserve
+            WHERE guild_id=$1
+            AND NOT ($3 <= start_at OR $2 >= end_at)
+            """, interaction.guild.id, cur, nxt)
 
-        await conn.execute("""
-        INSERT INTO reserve(guild_id,user_id,start_at,end_at)
-        VALUES($1,$2,$3,$4)
-        """, interaction.guild.id, interaction.user.id, start_dt, end_dt)
+            if not overlap:
+                await conn.execute("""
+                INSERT INTO reserve(guild_id,user_id,start_at,end_at)
+                VALUES($1,NULL,$2,$3)
+                """, interaction.guild.id, cur, nxt)
+                created += 1
 
-    await interaction.followup.send("予約完了")
+            cur = nxt
+
+    await interaction.followup.send(f"枠生成完了 ({created}枠)")
 
 # ===== 3分前通知 =====
 @tasks.loop(minutes=1)
@@ -94,6 +123,7 @@ async def reminder():
         rows = await conn.fetch("""
         SELECT * FROM reserve
         WHERE notified=false
+        AND user_id IS NOT NULL
         AND start_at <= $1
         """, now + timedelta(minutes=3))
 
@@ -108,6 +138,9 @@ async def reminder():
                 if channel:
                     await channel.send(f"<@{r['user_id']}> 3分前通知")
 
-            await conn.execute("UPDATE reserve SET notified=true WHERE id=$1", r["id"])
+            await conn.execute(
+                "UPDATE reserve SET notified=true WHERE id=$1",
+                r["id"]
+            )
 
 bot.run(TOKEN)
