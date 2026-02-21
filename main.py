@@ -143,22 +143,10 @@ async def re(interaction:discord.Interaction):
 
 # ===== NOTIFY WORKER =====
 @tasks.loop(seconds=30)
-async def notify():
-    now = datetime.now()
-    target = (now + timedelta(minutes=3)).strftime("%H:%M")
-
-    c.execute("SELECT time,user_id FROM schedule WHERE time=?", (target,))
-    rows = c.fetchall()
-
-    if not rows:
-        return
-
-    channel = bot.get_channel(last_channel_id)
-    if not channel:
-        return
-
-    for t, uid in rows:
-        await channel.send(f"<@{uid}> ⏰ {t} の3分前です！")
+async def notify_scan():
+    now=(datetime.now()+timedelta(minutes=3)).strftime("%H:%M")
+    c.execute("SELECT guild_id,time,user_id FROM schedule WHERE time=? AND notified=0",(now,))
+    rows=c.fetchall()
 
     for gid,t,uid in rows:
         await notify_queue.put((gid,t,uid))
