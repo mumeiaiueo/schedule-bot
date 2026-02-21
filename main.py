@@ -5,9 +5,14 @@ from datetime import datetime, timedelta
 import asyncpg
 import os
 
-# ---------- ENV ----------
+# ===== Railway環境変数 =====
 TOKEN = os.getenv("TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+
+DB_USER = os.getenv("PGUSER")
+DB_PASS = os.getenv("PGPASSWORD")
+DB_NAME = os.getenv("PGDATABASE")
+DB_HOST = os.getenv("PGHOST")
+DB_PORT = os.getenv("PGPORT")
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -15,7 +20,13 @@ tree = bot.tree
 
 # ---------- DB ----------
 async def create_db():
-    return await asyncpg.create_pool(DATABASE_URL)
+    return await asyncpg.create_pool(
+        user=DB_USER,
+        password=DB_PASS,
+        database=DB_NAME,
+        host=DB_HOST,
+        port=DB_PORT
+    )
 
 # ---------- SLOT ----------
 def create_slots(start_str, end_str, minutes):
@@ -45,11 +56,7 @@ class SlotButton(discord.ui.Button):
         try:
             async with bot.pool.acquire() as conn:
                 await conn.execute(
-                    """
-                    INSERT INTO reserve(server_id, slot, user_id)
-                    VALUES($1,$2,$3)
-                    ON CONFLICT(server_id, slot) DO NOTHING
-                    """,
+                    "INSERT INTO reserve(server_id, slot, user_id) VALUES($1,$2,$3)",
                     server, slot, user
                 )
 
