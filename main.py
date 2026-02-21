@@ -175,6 +175,112 @@ async def notify():
     c.execute("DELETE FROM schedule WHERE time=?",(del_time,))
     conn.commit()
 
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
+const fs = require("fs");
+
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+const TOKEN = "BOT_TOKEN";
+const DATA = "./data.json";
+
+let db = { reservations:{}, log:{} };
+if (fs.existsSync(DATA)) db = JSON.parse(fs.readFileSync(DATA));
+
+function save(){ fs.writeFileSync(DATA, JSON.stringify(db,null,2)); }
+
+function key(guild,slot){ return guild+"_"+slot }
+
+function schedule(guild,slot,user,channel){
+  const time = new Date(slot).getTime();
+  const now = Date.now();
+
+  const before = time - now - 180000;
+  if(before>0){
+    setTimeout(()=>{
+      channel.send(`<@${user}> 3分前通知`);
+    },before);
+  }
+
+  const at = time - now;
+  if(at>0){
+    setTimeout(()=>{
+      channel.send(`<@${user}> 時間です`);
+      delete db.reservations[key(guild,slot)];
+      save();
+    },at);
+  }
+}
+
+client.once("ready",()=>{
+  console.log("ready");
+
+  for(const k in db.reservations){
+    const r = db.reservations[k];
+    const ch = client.channels.cache.get(r.channel);
+    if(ch) schedule(r.guild,r.slot,r.user,ch);
+  }
+});
+
+client.on("interactionCreate", async i=>{
+  if(i.isChatInputCommand()){
+
+    if(i.commandName==="setlog"){
+      db.log[i.guildId]=i.channelId;
+      save();
+      i.reply("ログ設定完了");
+    }
+
+    if(i.commandName==="re"){
+      const embed=new EmbedBuilder().setTitle("予約").setDescription("押して予約");
+      const row=new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("reserve").setLabel("予約").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("cancel").setLabel("キャンセル").setStyle(ButtonStyle.Danger)
+      );
+      i.channel.send({embeds:[embed],components:[row]});
+      i.reply({content:"再生成完了",ephemeral:true});
+    }
+  }
+
+  if(i.isButton()){
+    const slot = new Date(Date.now()+600000).toISOString();
+    const k = key(i.guildId,slot);
+
+    if(i.customId==="reserve"){
+      if(db.reservations[k]) return i.reply({content:"埋まってる",ephemeral:true});
+
+      db.reservations[k]={guild:i.guildId,user:i.user.id,slot,channel:i.channelId};
+      save();
+
+      const log = db.log[i.guildId];
+      if(log){
+        const ch = client.channels.cache.get(log);
+        if(ch) ch.send(`${i.user.tag} が予約`);
+      }
+
+      schedule(i.guildId,slot,i.user.id,i.channel);
+
+      i.reply({content:"予約完了",ephemeral:true});
+    }
+
+    if(i.customId==="cancel"){
+      if(!db.reservations[k]) return i.reply({content:"なし",ephemeral:true});
+      if(db.reservations[k].user!==i.user.id) return i.reply({content:"本人のみ",ephemeral:true});
+
+      delete db.reservations[k];
+      save();
+
+      i.reply({content:"キャンセル",ephemeral:true});
+    }
+  }
+});
+
+client.login(TOKEN);
+
+client.application?.commands.set([
+  new SlashCommandBuilder().setName("setlog").setDescription("ログ設定"),
+  new SlashCommandBuilder().setName("re").setDescription("パネル再生成")
+]);
+
 @bot.event
 async def on_ready():
     await bot.tree.sync()
