@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import asyncpg
 import os
 
+# ===== ENV =====
 TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -14,7 +15,28 @@ tree = bot.tree
 
 # ---------- DB ----------
 async def create_db():
-    return await asyncpg.create_pool(DATABASE_URL)
+    pool = await asyncpg.create_pool(dsn=DATABASE_URL)
+
+    # テーブル自動作成
+    async with pool.acquire() as conn:
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS reserve(
+            id SERIAL PRIMARY KEY,
+            server_id TEXT,
+            slot TEXT,
+            user_id TEXT,
+            UNIQUE(server_id, slot)
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS guild_settings(
+            server_id TEXT PRIMARY KEY,
+            notify_channel TEXT
+        );
+        """)
+
+    return pool
 
 # ---------- SLOT ----------
 def create_slots(start_str, end_str, minutes):
@@ -30,6 +52,7 @@ def create_slots(start_str, end_str, minutes):
         slots.append(f"{cur.strftime('%H:%M')}〜{nxt.strftime('%H:%M')}")
         cur = nxt
     return slots
+
 # ---------- BUTTON ----------
 class SlotButton(discord.ui.Button):
     def __init__(self, label):
@@ -107,27 +130,13 @@ async def notifyset(interaction: discord.Interaction, channel: discord.TextChann
 
     async with bot.pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO guild_settings(server_id, notify_channel)
-            VALUES($1,$2)
-            ON CONFLICT(server_id)
-            DO UPDATE SET notify_channel=$2
+        INSERT INTO guild_settings(server_id, notify_channel)
+        VALUES($1,$2)
+        ON CONFLICT(server_id)
+        DO UPDATE SET notify_channel=$2
         """, server, str(channel.id))
 
     await interaction.response.send_message("設定完了", ephemeral=True)
-
-@tree.command(name="myreserve", description="自分の予約")
-async def myreserve(interaction: discord.Interaction):
-    user = str(interaction.user.id)
-    server = str(interaction.guild.id)
-
-    async with bot.pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT slot FROM reserve WHERE server_id=$1 AND user_id=$2",
-            server, user
-        )
-
-    text = "予約なし" if not rows else "\n".join([r["slot"] for r in rows])
-    await interaction.response.send_message(text, ephemeral=True)
 
 # ---------- REMIND ----------
 @tasks.loop(seconds=60)
@@ -146,7 +155,6 @@ async def remind():
         notify_time = datetime.strptime(start, "%H:%M") - timedelta(minutes=3)
 
         if notify_time.strftime("%H:%M") == now.strftime("%H:%M"):
-
             async with bot.pool.acquire() as conn:
                 setting = await conn.fetchrow(
                     "SELECT notify_channel FROM guild_settings WHERE server_id=$1",
