@@ -1,63 +1,40 @@
-import asyncio
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+from discord.ext import tasks
+from datetime import datetime, timedelta, timezone
 
-from utils.data_manager import load_data, save_data
+@tasks.loop(seconds=20)
+async def remind_loop(bot):
+    now = datetime.now(timezone.utc)
+    print("⏱ remind_loop alive:", now.isoformat())  # ← まずこれがログに出るか確認
 
-JST = ZoneInfo("Asia/Tokyo")
+    # 3分前判定（20秒窓）
+    target_from = now + timedelta(minutes=3)
+    target_to   = now + timedelta(minutes=3, seconds=20)
 
-async def start_loop(bot):
+    async with bot.pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT s.id, s.guild_id, s.user_id, s.start_at, gs.notify_channel
+            FROM slots s
+            JOIN guild_settings gs ON gs.guild_id = s.guild_id
+            WHERE s.start_at >= $1
+              AND s.start_at <  $2
+              AND COALESCE(s.notified, false) = false
+              AND gs.notify_channel IS NOT NULL
+            """,
+            target_from, target_to
+        )
 
-    async def loop():
-        await bot.wait_until_ready()
-        print("✅ remind loop started")
+    print("🔎 remind candidates:", len(rows))
 
-        while not bot.is_closed():
-            data = load_data()
-            now = datetime.now(JST)
+    for r in rows:
+        ch = bot.get_channel(int(r["notify_channel"])) or await bot.fetch_channel(int(r["notify_channel"]))
+        user_id = int(r["user_id"])
+        await ch.send(f"<@{user_id}> あと3分であなたの番です！（start_at={r['start_at']}）")
 
-            for gid, g in data.get("guilds", {}).items():
-                notify_id = g.get("notify_channel")
-                if not notify_id:
-                    continue
+        async with bot.pool.acquire() as conn:
+            await conn.execute("UPDATE slots SET notified=true WHERE id=$1", r["id"])
 
-                ch = bot.get_channel(int(notify_id))
-                if not ch:
-                    continue
-
-                meta = g.get("meta", {})
-                start_min = meta.get("start_min")
-                cross_midnight = meta.get("cross_midnight", False)
-
-                reservations = g.get("reservations", {})
-                reminded = g.get("reminded", [])
-
-                for slot, uid in list(reservations.items()):
-                    if slot in reminded:
-                        continue
-
-                    # slot は "HH:MM"
-                    h, m = map(int, slot.split(":"))
-                    slot_min = h * 60 + m
-
-                    slot_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
-
-                    # 日付またぎ：開始より小さい時刻は翌日扱い
-                    if cross_midnight and start_min is not None and slot_min < start_min:
-                        slot_time += timedelta(days=1)
-
-                    diff = (slot_time - now).total_seconds()
-
-                    # 🔍 動作確認ログ（必要ならあとで消してOK）
-                    print("JST now", now.strftime("%H:%M:%S"), "slot", slot, "diff", int(diff))
-
-                    # 3分前（取りこぼしにくい）
-                    if 0 < diff <= 180:
-                        await ch.send(f"<@{uid}> ⏰ **{slot} の3分前**です")
-                        reminded.append(slot)
-                        g["reminded"] = reminded
-                        save_data(data)
-
-            await asyncio.sleep(10)
-
-    asyncio.create_task(loop())
+def start_remind(bot):
+    if not remind_loop.is_running():
+        remind_loop.start(bot)
+        print("✅ remind_loop started")
