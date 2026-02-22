@@ -32,7 +32,7 @@ def setup(bot: discord.Client):
                 return
 
             # ===== ここからDBにも枠を作る =====
-            guild_id_int = interaction.guild.id  # slots.guild_id は BIGINT 想定
+            guild_id_int = interaction.guild.id
             today_jst = datetime.now(JST).date()
 
             # 日跨ぎ判定
@@ -42,28 +42,27 @@ def setup(bot: discord.Client):
             end_min = end_h * 60 + end_m
             cross_midnight = end_min <= start_min
 
-            # いったんこのサーバーの枠を全削除（運用に合わせて調整可）
             async with bot.pool.acquire() as conn:
                 await conn.execute("DELETE FROM slots WHERE guild_id = $1", guild_id_int)
 
-                # 枠INSERT（user_idはNULL、notified=false）
                 for t in slots:
                     h, m = map(int, t.split(":"))
                     day = today_jst
-                    if cross_midnight:
-                        # startより小さい時刻は翌日扱い
-                        if (h * 60 + m) < start_min:
-                            day = today_jst + timedelta(days=1)
+
+                    if cross_midnight and (h * 60 + m) < start_min:
+                        day = today_jst + timedelta(days=1)
 
                     start_at_jst = datetime(day.year, day.month, day.day, h, m, tzinfo=JST)
                     start_at_utc = start_at_jst.astimezone(timezone.utc)
 
+                    # ✅ slot_time がNOT NULLなので必ず入れる
                     await conn.execute(
                         """
-                        INSERT INTO slots (guild_id, start_at, user_id, notified)
-                        VALUES ($1, $2, NULL, false)
+                        INSERT INTO slots (guild_id, slot_time, start_at, user_id, notified)
+                        VALUES ($1, $2, $3, NULL, false)
                         """,
                         guild_id_int,
+                        t,            # ← "18:00" などの枠文字列
                         start_at_utc
                     )
             # ===== DB枠作成ここまで =====
