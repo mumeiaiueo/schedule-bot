@@ -10,7 +10,9 @@ class Bot(commands.Bot):
         await start_loop(self)
 
 intents = discord.Intents.default()
-bot = Bot(command_prefix="!", intents=intents)
+intents.message_content = True   # ←追加
+
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
