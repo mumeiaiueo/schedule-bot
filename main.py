@@ -1,16 +1,21 @@
+import os
 import discord
 import asyncio
 from datetime import datetime, timedelta
 import json
 
 def load_data():
-    try:
-        with open("data/data.json", "r") as f:
-            return json.load(f)
-    except:
-        return {"reservations": {}, "reminded": []}
+    os.makedirs("data", exist_ok=True)
+
+    if not os.path.exists("data/data.json"):
+        with open("data/data.json", "w") as f:
+            json.dump({"reservations": {}, "reminded": []}, f)
+
+    with open("data/data.json", "r") as f:
+        return json.load(f)
 
 def save_data(data):
+    os.makedirs("data", exist_ok=True)
     with open("data/data.json", "w") as f:
         json.dump(data, f, indent=2)
 
