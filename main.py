@@ -6,9 +6,9 @@ from utils.db import init_db_pool
 
 TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+GUILD_ID = os.getenv("GUILD_ID")  # ← 任意（入れると反映が速い）
 
 class Bot(commands.Bot):
-
     async def setup_hook(self):
         print("🚀 setup_hook start")
 
@@ -17,37 +17,40 @@ class Bot(commands.Bot):
         if not DATABASE_URL:
             raise RuntimeError("DATABASE_URL が環境変数にありません")
 
-        print("📦 DB初期化開始")
+        # DB
         self.pool = await init_db_pool(DATABASE_URL)
         print("✅ DB ready")
 
-        print("📦 コマンド読み込み開始")
+        # コマンド（一本化：create のみ）
         from commands.create import setup as create_setup
         create_setup(self)
 
-        try:
-            from commands.settings import setup as settings_setup
-            settings_setup(self)
-        except Exception as e:
-            print("⚠ settings.py not loaded:", e)
+        # ❌ /notifyset を消すため、settings は読み込まない
+        # from commands.settings import setup as settings_setup
+        # settings_setup(self)
 
-        try:
-            from commands.debug import setup as debug_setup
-            debug_setup(self)
-        except Exception as e:
-            print("⚠ debug.py not loaded:", e)
+        # ❌ 競合しやすいので debug も一旦読み込まない（必要なら後で戻す）
+        # from commands.debug import setup as debug_setup
+        # debug_setup(self)
 
-        print("📦 remind読み込み開始")
+        # remind
         try:
             from commands.remind import start_remind
             start_remind(self)
-            print("🔥 remind 起動処理呼び出し完了")
+            print("✅ remind started")
         except Exception as e:
             print("⚠ remind 起動失敗:", e)
 
-        await self.tree.sync()
-        print("✅ commands synced")
-        print("🚀 setup_hook end")
+        # コマンド同期（ギルド優先）
+        if GUILD_ID:
+            guild = discord.Object(id=int(GUILD_ID))
+            await self.tree.sync(guild=guild)
+            print("✅ commands synced (guild)")
+        else:
+            await self.tree.sync()
+            print("✅ commands synced (global)")
+
+        print("🏁 setup_hook end")
 
 intents = discord.Intents.default()
 intents.message_content = False
