@@ -17,7 +17,7 @@ async def remind_loop(bot):
                 """
                 SELECT s.id, s.guild_id, s.user_id, s.start_at, gs.notify_channel
                 FROM slots s
-                JOIN guild_settings gs ON gs.guild_id = s.guild_id
+                JOIN guild_settings gs ON gs.guild_id = s.guild_id::text
                 WHERE s.start_at >= $1
                   AND s.start_at <  $2
                   AND COALESCE(s.notified, false) = false
@@ -30,17 +30,20 @@ async def remind_loop(bot):
 
         for r in rows:
             try:
-                notify_channel = int(r["notify_channel"])  # DBはTEXT想定→intへ
-                user_id = int(r["user_id"])               # DBはTEXT想定→intへ
+                notify_channel = int(r["notify_channel"])
+                user_id = int(r["user_id"])
 
                 ch = bot.get_channel(notify_channel)
                 if ch is None:
-                    ch = await bot.fetch_channel(notify_channel)  # ここが権限/削除で落ちがち
+                    ch = await bot.fetch_channel(notify_channel)
 
                 await ch.send(f"<@{user_id}> あと3分であなたの番です！")
 
                 async with bot.pool.acquire() as conn:
-                    await conn.execute("UPDATE slots SET notified=true WHERE id=$1", r["id"])
+                    await conn.execute(
+                        "UPDATE slots SET notified=true WHERE id=$1",
+                        r["id"]
+                    )
 
             except (discord.Forbidden, discord.NotFound) as e:
                 print("⚠ channel access error:", e, "channel_id=", r.get("notify_channel"))
