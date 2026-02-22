@@ -1,3 +1,5 @@
+print("🔥 MAIN.PY LOADED v2")
+
 import os
 import discord
 from discord.ext import commands
@@ -11,21 +13,18 @@ class Bot(commands.Bot):
         from commands.create import setup as create_setup
         create_setup(self)
 
-        # notifyset が別ファイルならここで読み込み
         try:
             from commands.settings import setup as settings_setup
             settings_setup(self)
         except Exception as e:
             print("⚠ settings.py not loaded:", e)
 
-        # debug（/debugdata /pingnotify）
         try:
             from commands.debug import setup as debug_setup
             debug_setup(self)
         except Exception as e:
             print("⚠ debug.py not loaded:", e)
 
-        # 3分前通知ループ
         from commands.remind import start_loop
         await start_loop(self)
 
