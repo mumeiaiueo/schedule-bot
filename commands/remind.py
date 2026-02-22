@@ -3,13 +3,12 @@ import asyncio
 from datetime import datetime, timedelta
 import json
 
-# ⭐ data.json 読み込み
 def load_data():
     try:
         with open("data/data.json", "r") as f:
             return json.load(f)
     except:
-        return {"reservations": {}}
+        return {"reservations": {}, "reminded": []}
 
 def save_data(data):
     with open("data/data.json", "w") as f:
@@ -22,38 +21,10 @@ def start_remind_loop(bot):
 
         while not bot.is_closed():
             data = load_data()
-
-            # ⭐ チャンネル未設定ならスキップ
-            if "remind_channel" not in data:
-                await asyncio.sleep(30)
-                continue
-
-            channel = bot.get_channel(data["remind_channel"])
-            if channel is None:
-                await asyncio.sleep(30)
-                continue
-
-            now = datetime.now()
-
-            for slot, user_id in list(data.get("reservations", {}).items()):
-                try:
-                    slot_time = datetime.strptime(slot, "%H:%M")
-                    slot_time = now.replace(hour=slot_time.hour, minute=slot_time.minute, second=0)
-
-                    # ⭐ 過去時間ならスキップ
-                    if slot_time < now:
-                        continue
-
-                    diff = slot_time - now
-
-                    # ⭐ 3分前判定
-                    if timedelta(minutes=2, seconds=50) < diff <= timedelta(minutes=3):
-                        user = await bot.fetch_user(int(user_id))
-                        await channel.send(f"{user.mention} 3分前です")
-
-                except Exception as e:
-                    print("remind error:", e)
-
             await asyncio.sleep(10)
 
     bot.loop.create_task(loop())
+
+# ⭐ これを追加
+def setup(bot):
+    start_remind_loop(bot)
