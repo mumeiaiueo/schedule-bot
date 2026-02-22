@@ -50,7 +50,7 @@ async def remind_loop(bot):
                 if ch is None:
                     ch = await bot.fetch_channel(notify_channel)
 
-                await ch.send(f"<@{user_id}> あと3分であなたの番です！")
+                await ch.send(f"<@{user_id}> もうすぐあなたの番です！")
 
                 async with bot.pool.acquire() as conn:
                     await conn.execute(
