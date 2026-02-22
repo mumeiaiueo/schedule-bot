@@ -2,8 +2,7 @@ import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from utils.data_manager import load_data, save_data, get_guild
-from views.slot_view import SlotView, build_panel_text
+from utils.data_manager import load_data, save_data
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -11,73 +10,53 @@ async def start_loop(bot):
 
     async def loop():
         await bot.wait_until_ready()
+        print("✅ remind loop started")
 
         while not bot.is_closed():
             data = load_data()
+            now = datetime.now(JST)
 
             for gid, g in data.get("guilds", {}).items():
-                guild_id = int(gid)
-
-                now = datetime.now(JST)
-
                 notify_id = g.get("notify_channel")
-                notify_ch = bot.get_channel(notify_id) if notify_id else None
+                if not notify_id:
+                    continue
+
+                ch = bot.get_channel(int(notify_id))
+                if not ch:
+                    continue
 
                 meta = g.get("meta", {})
                 start_min = meta.get("start_min")
                 cross_midnight = meta.get("cross_midnight", False)
 
-                # 3分前通知
-                if notify_ch:
-                    for slot, uid in list(g.get("reservations", {}).items()):
-                        if slot in g.get("reminded", []):
-                            continue
+                reservations = g.get("reservations", {})
+                reminded = g.get("reminded", [])
 
-                        h, m = map(int, slot.split(":"))
-                        slot_min = h * 60 + m
+                for slot, uid in list(reservations.items()):
+                    if slot in reminded:
+                        continue
 
-                        slot_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
-
-                        # ⭐ 日付またぎの場合：開始より小さい時刻は「翌日」扱い
-                        if cross_midnight and start_min is not None and slot_min < start_min:
-                            slot_time += timedelta(days=1)
-
-                        diff = (slot_time - now).total_seconds()
-
-                        # ⭐ 安全に拾う（ズレても拾う）
-                        if 0 < diff <= 180:
-                            await notify_ch.send(f"<@{uid}> ⏰ **{slot} の3分前**です")
-                            g["reminded"].append(slot)
-                            save_data(data)
-
-                # ⑤ 時間が過ぎた枠の自動削除（予約済みだけ消す版）
-                # ※「枠自体も消したい」なら後で拡張する
-                for slot, uid in list(g.get("reservations", {}).items()):
+                    # slot は "HH:MM"
                     h, m = map(int, slot.split(":"))
                     slot_min = h * 60 + m
 
                     slot_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
+
+                    # 日付またぎ：開始より小さい時刻は翌日扱い
                     if cross_midnight and start_min is not None and slot_min < start_min:
                         slot_time += timedelta(days=1)
 
-                    # 開始時刻を過ぎたら予約を消す（必要なら+intervalで「終了後」にできる）
-                    if now >= slot_time:
-                        del g["reservations"][slot]
-                        if slot in g.get("reminded", []):
-                            g["reminded"].remove(slot)
-                        save_data(data)
+                    diff = (slot_time - now).total_seconds()
 
-                        # パネル更新（あれば）
-                        ch_id = g.get("panel", {}).get("channel_id")
-                        msg_id = g.get("panel", {}).get("message_id")
-                        if ch_id and msg_id:
-                            ch = bot.get_channel(ch_id)
-                            if ch:
-                                try:
-                                    msg = await ch.fetch_message(msg_id)
-                                    await msg.edit(content=build_panel_text(g), view=SlotView(guild_id=guild_id, page=0))
-                                except:
-                                    pass
+                    # 🔍 動作確認ログ（必要ならあとで消してOK）
+                    print("JST now", now.strftime("%H:%M:%S"), "slot", slot, "diff", int(diff))
+
+                    # 3分前（取りこぼしにくい）
+                    if 0 < diff <= 180:
+                        await ch.send(f"<@{uid}> ⏰ **{slot} の3分前**です")
+                        reminded.append(slot)
+                        g["reminded"] = reminded
+                        save_data(data)
 
             await asyncio.sleep(10)
 
