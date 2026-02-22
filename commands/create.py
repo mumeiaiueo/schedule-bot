@@ -37,6 +37,17 @@ def setup(bot: discord.Client):
             g["reminded"] = []
             save_data(data)
 
+            # ⭐ 日付またぎ判定用のメタ情報を保存
+start_h, start_m = map(int, start.split(":"))
+end_h, end_m = map(int, end.split(":"))
+start_min = start_h * 60 + start_m
+end_min = end_h * 60 + end_m
+cross_midnight = end_min <= start_min
+
+g["meta"] = {
+    "start_min": start_min,
+    "cross_midnight": cross_midnight
+}
             # パネル送信
             view = SlotView(guild_id=interaction.guild.id, page=0)
             msg = await interaction.followup.send(content=build_panel_text(g), view=view)
