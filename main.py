@@ -1,64 +1,64 @@
-import os
+from discord.ext import tasks
+from datetime import datetime, timedelta, timezone
+import traceback
 import discord
-from discord.ext import commands
 
-from utils.db import init_db_pool
+REMIND_SEC = 180
+ALLOW_RANGE = 15
 
-TOKEN = os.getenv("TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
-GUILD_ID = os.getenv("GUILD_ID")  # ← 任意（入れると反映が速い）
+@tasks.loop(seconds=20)
+async def remind_loop(bot):
+    try:
+        now = datetime.now(timezone.utc)
+        target_from = now + timedelta(seconds=120)
+        target_to   = now + timedelta(seconds=240)
 
-class Bot(commands.Bot):
-    async def setup_hook(self):
-        print("🚀 setup_hook start")
+        async with bot.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT s.id, s.user_id, s.start_at, gs.notify_channel
+                FROM slots s
+                JOIN guild_settings gs ON gs.guild_id = s.guild_id::text
+                WHERE s.start_at >= $1
+                  AND s.start_at <  $2
+                  AND s.user_id IS NOT NULL
+                  AND COALESCE(s.notified,false) = false
+                  AND gs.notify_channel IS NOT NULL
+                """,
+                target_from, target_to
+            )
 
-        if not TOKEN:
-            raise RuntimeError("TOKEN が環境変数にありません")
-        if not DATABASE_URL:
-            raise RuntimeError("DATABASE_URL が環境変数にありません")
+        for r in rows:
+            try:
+                remaining = (r["start_at"] - now).total_seconds()
+                if not (REMIND_SEC - ALLOW_RANGE <= remaining <= REMIND_SEC + ALLOW_RANGE):
+                    continue
 
-        # DB
-        self.pool = await init_db_pool(DATABASE_URL)
-        print("✅ DB ready")
+                ch_id = int(r["notify_channel"])
+                user_id = int(r["user_id"])
 
-        # コマンド（一本化：create のみ）
-        from commands.create import setup as create_setup
-        create_setup(self)
+                ch = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
+                await ch.send(f"<@{user_id}> あと3分であなたの番です！")
 
-        # ❌ /notifyset を消すため、settings は読み込まない
-        # from commands.settings import setup as settings_setup
-        # settings_setup(self)
+                async with bot.pool.acquire() as conn:
+                    await conn.execute("UPDATE slots SET notified=true WHERE id=$1", r["id"])
 
-        # ❌ 競合しやすいので debug も一旦読み込まない（必要なら後で戻す）
-        # from commands.debug import setup as debug_setup
-        # debug_setup(self)
+            except (discord.Forbidden, discord.NotFound) as e:
+                print("⚠ notify channel error:", e)
+            except Exception:
+                print("❌ per-row error")
+                traceback.print_exc()
 
-        # remind
-        try:
-            from commands.remind import start_remind
-            start_remind(self)
-            print("✅ remind started")
-        except Exception as e:
-            print("⚠ remind 起動失敗:", e)
+    except Exception:
+        print("❌ remind_loop crashed (outer)")
+        traceback.print_exc()
 
-        # コマンド同期（ギルド優先）
-        if GUILD_ID:
-            guild = discord.Object(id=int(GUILD_ID))
-            await self.tree.sync(guild=guild)
-            print("✅ commands synced (guild)")
-        else:
-            await self.tree.sync()
-            print("✅ commands synced (global)")
+@remind_loop.error
+async def remind_loop_error(exc):
+    print("❌ remind_loop stopped by error:", exc)
+    traceback.print_exc()
 
-        print("🏁 setup_hook end")
-
-intents = discord.Intents.default()
-intents.message_content = False
-
-bot = Bot(command_prefix="!", intents=intents)
-
-@bot.event
-async def on_ready():
-    print("✅ on_ready:", bot.user)
-
-bot.run(TOKEN)
+def start_remind(bot):
+    if not remind_loop.is_running():
+        remind_loop.start(bot)
+        print("✅ remind_loop started")
