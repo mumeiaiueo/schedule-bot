@@ -26,12 +26,15 @@ async def remind_loop(bot):
                 target_from, target_to
             )
 
+        # ✅ 追加ログ（原因切り分け用）
         print("🔎 remind candidates:", len(rows))
+        if rows:
+            print("🔎 sample row:", dict(rows[0]))
 
         for r in rows:
             try:
-                notify_channel = int(r["notify_channel"])
-                user_id = int(r["user_id"])
+                notify_channel = int(r["notify_channel"])  # DB TEXT → int
+                user_id = int(r["user_id"])               # DB TEXT → int（Noneだと落ちる）
 
                 ch = bot.get_channel(notify_channel)
                 if ch is None:
