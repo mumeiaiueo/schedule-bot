@@ -5,7 +5,9 @@ import os
 # ⭐ 追加
 from commands.create import setup as create_setup
 from commands.remind import setup as remind_setup
-from remind import start_remind_loop
+
+create_setup(bot)
+remind_setup(bot)
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
