@@ -3,8 +3,11 @@ async def callback(self, interaction: discord.Interaction):
     data = load_data()
     slot = self.slot
 
+    # ⭐ reservations 初期化（これが神）
+    data.setdefault("reservations", {})
+
     # 重複防止
-    if slot in data.get("reservations", {}):
+    if slot in data["reservations"]:
         await interaction.response.send_message("埋まってる", ephemeral=True)
         return
 
@@ -12,7 +15,7 @@ async def callback(self, interaction: discord.Interaction):
     data["reservations"][slot] = interaction.user.id
     save_data(data)
 
-    # ⭐ まず interaction 応答
+    # ⭐ 先に応答
     await interaction.response.send_message("予約完了", ephemeral=True)
 
     # ⭐ メッセージ更新
