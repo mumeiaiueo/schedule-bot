@@ -9,8 +9,9 @@ async def remind_loop(bot):
         now = datetime.now(timezone.utc)
         print("⏱ remind_loop alive:", now.isoformat())
 
+        # テスト用：今から10分以内全部拾う
         target_from = now - timedelta(minutes=1)
-target_to   = now + timedelta(minutes=10)
+        target_to   = now + timedelta(minutes=10)
 
         async with bot.pool.acquire() as conn:
             rows = await conn.fetch(
@@ -23,24 +24,24 @@ target_to   = now + timedelta(minutes=10)
                   AND COALESCE(s.notified, false) = false
                   AND gs.notify_channel IS NOT NULL
                 """,
-                target_from, target_to
+                target_from,
+                target_to
             )
 
-        # ✅ 追加ログ（原因切り分け用）
         print("🔎 remind candidates:", len(rows))
         if rows:
             print("🔎 sample row:", dict(rows[0]))
 
         for r in rows:
             try:
-                notify_channel = int(r["notify_channel"])  # DB TEXT → int
-                user_id = int(r["user_id"])               # DB TEXT → int（Noneだと落ちる）
+                notify_channel = int(r["notify_channel"])
+                user_id = int(r["user_id"])
 
                 ch = bot.get_channel(notify_channel)
                 if ch is None:
                     ch = await bot.fetch_channel(notify_channel)
 
-                await ch.send(f"<@{user_id}> あと3分であなたの番です！")
+                await ch.send(f"<@{user_id}> まもなく開始です！")
 
                 async with bot.pool.acquire() as conn:
                     await conn.execute(
@@ -48,15 +49,14 @@ target_to   = now + timedelta(minutes=10)
                         r["id"]
                     )
 
-            except (discord.Forbidden, discord.NotFound) as e:
-                print("⚠ channel access error:", e, "channel_id=", r.get("notify_channel"))
             except Exception:
-                print("❌ per-row error:", dict(r))
+                print("❌ per-row error:")
                 traceback.print_exc()
 
     except Exception:
-        print("❌ remind_loop crashed (outer):")
+        print("❌ remind_loop crashed:")
         traceback.print_exc()
+
 
 def start_remind(bot):
     if not remind_loop.is_running():
