@@ -4,26 +4,29 @@ from utils.data_manager import load_data, get_guild
 
 def setup(bot: discord.Client):
 
-    @bot.tree.command(name="debugdata", description="現在の予約データ確認（管理者のみ）")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def debugdata(interaction: discord.Interaction):
+    @bot.tree.command(name="pingnotify", description="通知チャンネルにテスト送信")
+    async def pingnotify(interaction: discord.Interaction):
+
         data = load_data()
         g = get_guild(data, interaction.guild.id)
 
-        lines = [
-            f"slots: {len(g['slots'])}",
-            f"reservations: {len(g['reservations'])}",
-            f"notify_channel: {g.get('notify_channel')}",
-            f"panel_message_id: {g.get('panel', {}).get('message_id')}",
-        ]
+        ch_id = g.get("notify_channel")
 
-        # 予約の中身（最大20件）
-        items = list(g["reservations"].items())[:20]
-        lines.append("---- reservations sample ----")
-        if items:
-            for slot, uid in items:
-                lines.append(f"{slot} -> {uid}")
-        else:
-            lines.append("(empty)")
+        if not ch_id:
+            await interaction.response.send_message(
+                "❌ notify_channel が未設定です",
+                ephemeral=True
+            )
+            return
 
-        await interaction.response.send_message("```" + "\n".join(lines) + "```", ephemeral=True)
+        channel = bot.get_channel(int(ch_id))
+
+        if not channel:
+            await interaction.response.send_message(
+                "❌ チャンネルが見つかりません（権限またはIDエラー）",
+                ephemeral=True
+            )
+            return
+
+        await channel.send(f"{interaction.user.mention} ✅ テスト通知です")
+        await interaction.response.send_message("✅ 送信しました", ephemeral=True)
