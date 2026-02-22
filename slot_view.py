@@ -1,24 +1,34 @@
 async def callback(self, interaction: discord.Interaction):
 
-    if slot in data["reservations"]:
+    data = load_data()
+    slot = self.slot
+
+    # 重複防止
+    if slot in data.get("reservations", {}):
         await interaction.response.send_message("埋まってる", ephemeral=True)
         return
 
+    # 予約保存
     data["reservations"][slot] = interaction.user.id
     save_data(data)
 
-    # ⭐ メッセージ更新
-    channel = interaction.channel
-    message = await channel.fetch_message(data["message_id"])
-
-    msg = "📅 予約枠\n"
-    for s in data["slots"]:
-        if s in data["reservations"]:
-            user = await interaction.guild.fetch_member(data["reservations"][s])
-            msg += f"🔴 {s} {user.mention}\n"
-        else:
-            msg += f"🟢 {s}\n"
-
-    await message.edit(content=msg, view=SlotView(data["slots"]))
-
+    # ⭐ まず interaction 応答
     await interaction.response.send_message("予約完了", ephemeral=True)
+
+    # ⭐ メッセージ更新
+    try:
+        channel = interaction.channel
+        message = await channel.fetch_message(data["message_id"])
+
+        msg = "📅 予約枠\n"
+        for s in data["slots"]:
+            if s in data["reservations"]:
+                user_id = data["reservations"][s]
+                msg += f"🔴 {s} <@{user_id}>\n"
+            else:
+                msg += f"🟢 {s}\n"
+
+        await message.edit(content=msg, view=SlotView(data["slots"]))
+
+    except Exception as e:
+        print("edit error:", e)
