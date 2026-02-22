@@ -21,8 +21,10 @@ async def on_ready():
 
 from commands.create import setup as create_setup
 from commands.settings import setup as settings_setup
+from commands.debug import setup as debug_setup
 
 create_setup(bot)
 settings_setup(bot)
+debug_setup(bot)
 
 bot.run(TOKEN)
