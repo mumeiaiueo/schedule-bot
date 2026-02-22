@@ -22,8 +22,10 @@ def setup(bot):
 
         slots = generate_slots(start_dt,end_dt,interval.value)
 
-        msg = "📅予約枠\n"
-        for s in slots:
-            msg += f"🟢 {s}\n"
+msg = "📅 予約枠\n"
+for s in slots:
+    msg += f"🟢 {s}\n"
 
-        await interaction.response.send_message(msg,view=SlotView(slots))
+message = await interaction.followup.send(msg, view=SlotView(slots))
+data["message_id"] = message.id
+save_data(data)
