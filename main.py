@@ -61,6 +61,6 @@ async def create(
     for s in slots:
         msg += f"🟢 {s}\n"
 
-    await interaction.followup.send(msg)
+await interaction.followup.send(msg, view=SlotView(slots))
 
 bot.run(TOKEN)
