@@ -19,13 +19,13 @@ def get_guild(data, guild_id: int):
     gid = str(guild_id)
     if gid not in data["guilds"]:
         data["guilds"][gid] = {
-            "notify_channel": None,
+            "notify_channel": None,  # ← 修正
             "panel": {
                 "channel_id": None,
                 "message_id": None
             },
             "slots": [],
-            "reservations": {},   # {"12:50": user_id}
-            "reminded": []        # ["12:50"] 送信済み
+            "reservations": {},
+            "reminded": []
         }
     return data["guilds"][gid]
