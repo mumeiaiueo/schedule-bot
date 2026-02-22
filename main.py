@@ -36,6 +36,13 @@ class Bot(commands.Bot):
         except Exception as e:
             print("⚠ debug.py not loaded:", e)
 
+        # ✅ ② 追加：3分前通知ループ起動
+        try:
+            from commands.remind import start_remind
+            start_remind(self)
+        except Exception as e:
+            print("⚠ remind.py not loaded / loop not started:", e)
+
         await self.tree.sync()
         print("✅ commands synced")
 
