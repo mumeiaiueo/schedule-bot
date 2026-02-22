@@ -100,7 +100,7 @@ target_to   = now + timedelta(minutes=3, seconds=20)
                 if ch is None:
                     ch = await bot.fetch_channel(notify_channel)
 
-                await ch.send(f"<@{user_id}> まもなく開始です！（start_at={r['start_at']}）")
+                await ch.send(f"<@{user_id}> あと3分であなたの番です！")
 
                 async with bot.pool.acquire() as conn:
                     await conn.execute("UPDATE slots SET notified=true WHERE id=$1", r["id"])
