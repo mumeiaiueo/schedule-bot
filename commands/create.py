@@ -10,16 +10,19 @@ JST = timezone(timedelta(hours=9))
 
 def setup(bot: discord.Client):
 
-   @bot.tree.command(
-    name="create2",
-    description="開始/終了/間隔から予約パネル作成 + 通知チャンネル設定（一本化）"
-)
+    # ✅ コマンド名を /setup に変更（一本化を確実に反映させるため）
+    @bot.tree.command(name="setup", description="枠作成 + 通知チャンネル設定（一本化）")
+    @app_commands.describe(
+        start="開始 例 07:30",
+        end="終了 例 08:30",
+        notify_channel="3分前通知を送るチャンネル",
+    )
     @app_commands.choices(interval=[
         app_commands.Choice(name="20", value=20),
         app_commands.Choice(name="25", value=25),
         app_commands.Choice(name="30", value=30),
     ])
-    async def create(
+    async def setup_cmd(
         interaction: discord.Interaction,
         start: str,
         end: str,
@@ -45,7 +48,7 @@ def setup(bot: discord.Client):
             cross_midnight = end_min <= start_min
 
             async with bot.pool.acquire() as conn:
-                # ✅ 通知チャンネルを保存（一本化）
+                # ✅ 通知チャンネル保存（一本化）
                 await conn.execute(
                     """
                     INSERT INTO guild_settings (guild_id, notify_channel)
@@ -57,7 +60,7 @@ def setup(bot: discord.Client):
                     str(notify_channel.id)
                 )
 
-                # このサーバーの枠を作り直し
+                # 既存枠削除 → 作り直し
                 await conn.execute("DELETE FROM slots WHERE guild_id = $1", guild_id_int)
 
                 for t in slots:
@@ -69,7 +72,6 @@ def setup(bot: discord.Client):
                     start_at_jst = datetime(day.year, day.month, day.day, h, m, tzinfo=JST)
                     start_at_utc = start_at_jst.astimezone(timezone.utc)
 
-                    # slot_time が NOT NULL なので必ず入れる
                     await conn.execute(
                         """
                         INSERT INTO slots (guild_id, slot_time, start_at, user_id, notified)
@@ -80,7 +82,7 @@ def setup(bot: discord.Client):
                         start_at_utc
                     )
 
-            # パネル表示（今まで通り）
+            # パネル表示（従来通り）
             data = load_data()
             g = get_guild(data, guild_id_int)
 
@@ -91,19 +93,16 @@ def setup(bot: discord.Client):
             save_data(data)
 
             view = SlotView(guild_id=guild_id_int, page=0)
-            msg = await interaction.followup.send(
-                content=build_panel_text(g),
-                view=view
-            )
+            msg = await interaction.followup.send(content=build_panel_text(g), view=view)
 
             g["panel"]["channel_id"] = msg.channel.id
             g["panel"]["message_id"] = msg.id
             save_data(data)
 
             await interaction.followup.send(
-                f"✅ 作成完了：通知チャンネルは {notify_channel.mention}",
+                f"✅ セットアップ完了：通知チャンネルは {notify_channel.mention}",
                 ephemeral=True
             )
 
         except Exception as e:
-            await interaction.followup.send(f"❌ create失敗: {type(e).__name__}: {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ setup失敗: {type(e).__name__}: {e}", ephemeral=True)
