@@ -1,13 +1,13 @@
 import discord
 from discord import app_commands
+from utils.time_utils import generate_slots
 from utils.data_manager import load_data, save_data, get_guild
-from utils.time_utils import build_slots
-from views.slot_view import SlotView
+from views.slot_view import SlotView, build_panel_text
 
 def setup(bot: discord.Client):
 
-    @bot.tree.command(name="create", description="予約枠パネルを作成")
-    @app_commands.describe(start="開始 (例 12:00)", end="終了 (例 18:00)")
+    @bot.tree.command(name="create", description="開始/終了と間隔から予約パネルを作成")
+    @app_commands.describe(start="開始 例 18:00", end="終了 例 01:00")
     @app_commands.choices(interval=[
         app_commands.Choice(name="20", value=20),
         app_commands.Choice(name="25", value=25),
@@ -17,36 +17,36 @@ def setup(bot: discord.Client):
         interaction: discord.Interaction,
         start: str,
         end: str,
-        interval: app_commands.Choice[int],
+        interval: app_commands.Choice[int]
     ):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
+        # 枠生成（HH:MMのみ）
         try:
-            slots = build_slots(start, end, interval.value)
-        except Exception:
-            await interaction.followup.send("❌ 時刻は HH:MM、間隔は20/25/30のみ", ephemeral=True)
+            slots = generate_slots(start, end, interval.value)
+            if not slots:
+                await interaction.followup.send("❌ 枠が作れません（時間か間隔を確認）")
+                return
+        except:
+            await interaction.followup.send("❌ 時間は HH:MM（例 18:00）で入力してね")
             return
 
         data = load_data()
         g = get_guild(data, interaction.guild.id)
 
-        # データ更新（新規作成なので初期化）
+        # 状態リセットして新規作成
         g["slots"] = slots
         g["reservations"] = {}
         g["reminded"] = []
-
-        # パネル本文（最初は緑だけ）
-        panel_text = "📅 予約枠\n" + "\n".join([f"🟢 {s['start_iso'][11:16]}" for s in slots])
-
-        # このチャンネルにパネルを出す
-        msg = await interaction.channel.send(panel_text, view=SlotView(interaction.guild.id))
-
-        g["panel_channel_id"] = interaction.channel.id
-        g["panel_message_id"] = msg.id
-
         save_data(data)
 
-        # 再起動してもボタン生きるように登録
-        bot.add_view(SlotView(interaction.guild.id))
+        # パネル送信
+        view = SlotView(guild_id=interaction.guild.id)
+        msg = await interaction.followup.send(content=build_panel_text(g), view=view)
 
-        await interaction.followup.send("✅ 予約パネルを作成しました", ephemeral=True)
+        # パネルID保存（更新に使う）
+        data = load_data()
+        g = get_guild(data, interaction.guild.id)
+        g["panel"]["channel_id"] = msg.channel.id
+        g["panel"]["message_id"] = msg.id
+        save_data(data)
