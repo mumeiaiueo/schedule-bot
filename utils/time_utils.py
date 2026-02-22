@@ -1,40 +1,20 @@
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
-JST = ZoneInfo("Asia/Tokyo")
+def generate_slots(start_hm: str, end_hm: str, interval: int):
+    # start_hm/end_hm: "HH:MM"
+    start = datetime.strptime(start_hm, "%H:%M")
+    end = datetime.strptime(end_hm, "%H:%M")
 
-def parse_hhmm(text: str) -> tuple[int, int]:
-    t = text.strip()
-    dt = datetime.strptime(t, "%H:%M")
-    return dt.hour, dt.minute
-
-def build_slots(start_hhmm: str, end_hhmm: str, interval: int) -> list[dict]:
-    if interval not in (20, 25, 30):
-        raise ValueError("interval must be 20/25/30")
-
-    sh, sm = parse_hhmm(start_hhmm)
-    eh, em = parse_hhmm(end_hhmm)
-
-    now = datetime.now(JST)
-    base_date = now.date()
-
-    start = datetime(base_date.year, base_date.month, base_date.day, sh, sm, tzinfo=JST)
-    end   = datetime(base_date.year, base_date.month, base_date.day, eh, em, tzinfo=JST)
-
-    # 日付またぎ
-    if end <= start:
-        end += timedelta(days=1)
+    # 同日基準で比較（end<=startなら翌日扱い）
+    base = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start_dt = base.replace(hour=start.hour, minute=start.minute)
+    end_dt = base.replace(hour=end.hour, minute=end.minute)
+    if end_dt <= start_dt:
+        end_dt += timedelta(days=1)
 
     slots = []
-    cur = start
-    while cur + timedelta(minutes=interval) <= end:
-        nxt = cur + timedelta(minutes=interval)
-        slot_id = cur.isoformat()  # 一意ID（日付含む）
-        slots.append({
-            "id": slot_id,
-            "start_iso": cur.isoformat(),
-            "end_iso": nxt.isoformat()
-        })
-        cur = nxt
-
+    cur = start_dt
+    while cur + timedelta(minutes=interval) <= end_dt:
+        slots.append(cur.strftime("%H:%M"))
+        cur += timedelta(minutes=interval)
     return slots
