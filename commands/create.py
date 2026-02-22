@@ -19,7 +19,6 @@ def setup(bot: discord.Client):
         end: str,
         interval: app_commands.Choice[int],
     ):
-        # ⭐ これを最速で返す（3秒制限対策）
         await interaction.response.defer(thinking=True)
 
         try:
@@ -31,34 +30,39 @@ def setup(bot: discord.Client):
             data = load_data()
             g = get_guild(data, interaction.guild.id)
 
-            # 状態リセットして新規作成
+            # 状態リセット
             g["slots"] = slots
             g["reservations"] = {}
             g["reminded"] = []
+
+            # ⭐ 日付またぎ判定保存（←ここをインデント内に！）
+            start_h, start_m = map(int, start.split(":"))
+            end_h, end_m = map(int, end.split(":"))
+            start_min = start_h * 60 + start_m
+            end_min = end_h * 60 + end_m
+            cross_midnight = end_min <= start_min
+
+            g["meta"] = {
+                "start_min": start_min,
+                "cross_midnight": cross_midnight
+            }
+
             save_data(data)
 
-            # ⭐ 日付またぎ判定用のメタ情報を保存
-start_h, start_m = map(int, start.split(":"))
-end_h, end_m = map(int, end.split(":"))
-start_min = start_h * 60 + start_m
-end_min = end_h * 60 + end_m
-cross_midnight = end_min <= start_min
-
-g["meta"] = {
-    "start_min": start_min,
-    "cross_midnight": cross_midnight
-}
             # パネル送信
             view = SlotView(guild_id=interaction.guild.id, page=0)
-            msg = await interaction.followup.send(content=build_panel_text(g), view=view)
+            msg = await interaction.followup.send(
+                content=build_panel_text(g),
+                view=view
+            )
 
             # パネルID保存
-            data = load_data()
-            g = get_guild(data, interaction.guild.id)
             g["panel"]["channel_id"] = msg.channel.id
             g["panel"]["message_id"] = msg.id
             save_data(data)
 
         except Exception as e:
-            # ⭐ 失敗時も必ず返信（Unknown interaction防止）
-            await interaction.followup.send(f"❌ create失敗: {type(e).__name__}: {e}", ephemeral=True)
+            await interaction.followup.send(
+                f"❌ create失敗: {type(e).__name__}: {e}",
+                ephemeral=True
+            )
