@@ -17,36 +17,37 @@ def setup(bot: discord.Client):
         interaction: discord.Interaction,
         start: str,
         end: str,
-        interval: app_commands.Choice[int]
+        interval: app_commands.Choice[int],
     ):
-        await interaction.response.defer()
+        # ⭐ これを最速で返す（3秒制限対策）
+        await interaction.response.defer(thinking=True)
 
-        # 枠生成（HH:MMのみ）
         try:
             slots = generate_slots(start, end, interval.value)
             if not slots:
-                await interaction.followup.send("❌ 枠が作れません（時間か間隔を確認）")
+                await interaction.followup.send("❌ 枠が作れません（時間か間隔を確認）", ephemeral=True)
                 return
-        except:
-            await interaction.followup.send("❌ 時間は HH:MM（例 18:00）で入力してね")
-            return
 
-        data = load_data()
-        g = get_guild(data, interaction.guild.id)
+            data = load_data()
+            g = get_guild(data, interaction.guild.id)
 
-        # 状態リセットして新規作成
-        g["slots"] = slots
-        g["reservations"] = {}
-        g["reminded"] = []
-        save_data(data)
+            # 状態リセットして新規作成
+            g["slots"] = slots
+            g["reservations"] = {}
+            g["reminded"] = []
+            save_data(data)
 
-        # パネル送信
-        view = SlotView(guild_id=interaction.guild.id)
-        msg = await interaction.followup.send(content=build_panel_text(g), view=view)
+            # パネル送信
+            view = SlotView(guild_id=interaction.guild.id, page=0)
+            msg = await interaction.followup.send(content=build_panel_text(g), view=view)
 
-        # パネルID保存（更新に使う）
-        data = load_data()
-        g = get_guild(data, interaction.guild.id)
-        g["panel"]["channel_id"] = msg.channel.id
-        g["panel"]["message_id"] = msg.id
-        save_data(data)
+            # パネルID保存
+            data = load_data()
+            g = get_guild(data, interaction.guild.id)
+            g["panel"]["channel_id"] = msg.channel.id
+            g["panel"]["message_id"] = msg.id
+            save_data(data)
+
+        except Exception as e:
+            # ⭐ 失敗時も必ず返信（Unknown interaction防止）
+            await interaction.followup.send(f"❌ create失敗: {type(e).__name__}: {e}", ephemeral=True)
