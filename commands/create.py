@@ -3,7 +3,7 @@ from discord import app_commands
 from datetime import datetime
 from utils.time_utils import generate_slots
 from views.slot_view import SlotView
-from data import load_data, save_data
+from data.data import load_data, save_data
 
 def setup(bot):
 
