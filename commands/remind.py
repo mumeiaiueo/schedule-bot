@@ -3,79 +3,24 @@ from datetime import datetime, timedelta, timezone
 import traceback
 import discord
 
+# 何秒前に送るか
+REMIND_SEC = 180
+# 取り逃し防止の許容幅（例：±90秒）
+WINDOW_SEC = 90
+
 @tasks.loop(seconds=20)
 async def remind_loop(bot):
     try:
         now = datetime.now(timezone.utc)
 
-target_from = now + timedelta(minutes=3)
-target_to   = now + timedelta(minutes=3, seconds=20)
-        print("⏱ now(UTC):", now.isoformat())
-        print("⏱ window:", target_from.isoformat(), " -> ", target_to.isoformat())
+        # “だいたい3分前”の範囲（広め）
+        target_from = now + timedelta(seconds=REMIND_SEC - WINDOW_SEC)
+        target_to   = now + timedelta(seconds=REMIND_SEC + WINDOW_SEC)
 
         async with bot.pool.acquire() as conn:
-            # ① slotsにそもそもデータがあるか（全体）
-            total_slots = await conn.fetchval("SELECT COUNT(*) FROM slots")
-            print("📦 slots total:", total_slots)
-
-            # ② このギルドのslots件数
-            guild_id_guess = None
-            # guild_id が bigint/text どっちでも対応できるように、両方試す
-            try:
-                guild_id_guess = int(getattr(bot, "last_guild_id", 0) or 0)
-            except:
-                guild_id_guess = 0
-
-            # last_guild_id が無い場合は、guild_settings から1つ拾う
-            if not guild_id_guess:
-                gid = await conn.fetchval("SELECT guild_id FROM guild_settings LIMIT 1")
-                try:
-                    guild_id_guess = int(gid)
-                except:
-                    guild_id_guess = 0
-
-            if guild_id_guess:
-                guild_slots = await conn.fetchval(
-                    "SELECT COUNT(*) FROM slots WHERE guild_id::text = $1",
-                    str(guild_id_guess)
-                )
-                print("🏠 slots for guild:", guild_id_guess, "count:", guild_slots)
-
-                # ③ このギルドで窓に入るstart_at件数（JOIN無し）
-                range_slots = await conn.fetchval(
-                    """
-                    SELECT COUNT(*)
-                    FROM slots
-                    WHERE guild_id::text = $3
-                      AND start_at >= $1
-                      AND start_at <  $2
-                    """,
-                    target_from, target_to, str(guild_id_guess)
-                )
-                print("⏰ slots in window (no join):", range_slots)
-
-                # ④ start_atのサンプル（上位5件）
-                sample = await conn.fetch(
-                    """
-                    SELECT id, guild_id, slot_time, start_at, user_id, notified
-                    FROM slots
-                    WHERE guild_id::text = $1
-                    ORDER BY start_at ASC
-                    LIMIT 5
-                    """,
-                    str(guild_id_guess)
-                )
-                if sample:
-                    print("🔎 sample slots (first 5):")
-                    for r in sample:
-                        print("  ", dict(r))
-                else:
-                    print("🔎 sample slots: none for this guild")
-
-            # ⑤ ここから本来の候補（JOINあり）
             rows = await conn.fetch(
                 """
-                SELECT s.id, s.guild_id, s.user_id, s.start_at, gs.notify_channel
+                SELECT s.id, s.guild_id, s.user_id, s.start_at, gs.notify_channel, COALESCE(s.notified,false) AS notified
                 FROM slots s
                 JOIN guild_settings gs ON gs.guild_id = s.guild_id::text
                 WHERE s.start_at >= $1
@@ -88,11 +33,16 @@ target_to   = now + timedelta(minutes=3, seconds=20)
             )
 
         print("🔎 remind candidates:", len(rows))
-        if rows:
-            print("🔎 sample candidate:", dict(rows[0]))
 
         for r in rows:
             try:
+                start_at = r["start_at"]  # timestamptz
+                remaining = (start_at - now).total_seconds()
+
+                # 念のため、秒数でもう一段フィルタ（変な一致を防ぐ）
+                if not (REMIND_SEC - WINDOW_SEC <= remaining < REMIND_SEC + WINDOW_SEC):
+                    continue
+
                 notify_channel = int(r["notify_channel"])
                 user_id = int(r["user_id"])
 
@@ -103,16 +53,20 @@ target_to   = now + timedelta(minutes=3, seconds=20)
                 await ch.send(f"<@{user_id}> あと3分であなたの番です！")
 
                 async with bot.pool.acquire() as conn:
-                    await conn.execute("UPDATE slots SET notified=true WHERE id=$1", r["id"])
+                    await conn.execute(
+                        "UPDATE slots SET notified=true WHERE id=$1",
+                        r["id"]
+                    )
 
+            except (discord.Forbidden, discord.NotFound) as e:
+                print("⚠ channel access error:", e, "channel_id=", r.get("notify_channel"))
             except Exception:
-                print("❌ per-row error:")
+                print("❌ per-row error:", dict(r))
                 traceback.print_exc()
 
     except Exception:
         print("❌ remind_loop crashed:")
         traceback.print_exc()
-
 
 def start_remind(bot):
     if not remind_loop.is_running():
