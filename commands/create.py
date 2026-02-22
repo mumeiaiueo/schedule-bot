@@ -11,7 +11,7 @@ JST = timezone(timedelta(hours=9))
 def setup(bot: discord.Client):
 
     # ✅ コマンド名を /setup に変更（一本化を確実に反映させるため）
-    @bot.tree.command(name="setup", description="枠作成 + 通知チャンネル設定（一本化）")
+    @bot.tree.command(name="setup2", description="枠作成 + 通知設定（一本化）")
     @app_commands.describe(
         start="開始 例 07:30",
         end="終了 例 08:30",
