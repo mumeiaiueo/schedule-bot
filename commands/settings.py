@@ -8,8 +8,8 @@ def setup(bot: discord.Client):
     async def notifyset(interaction: discord.Interaction, channel: discord.TextChannel):
         await interaction.response.defer(ephemeral=True)
 
-        guild_id = str(interaction.guild.id)   # ⭐ 文字列にする（DBがTEXTでも落ちない）
-        ch_id = int(channel.id)
+        guild_id = str(interaction.guild.id)
+        ch_id = str(channel.id)  # ⭐ int → str に変更
 
         async with bot.pool.acquire() as conn:
             await conn.execute(
