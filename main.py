@@ -57,10 +57,13 @@ async def create(
         slots.append(f"{current.strftime('%H:%M')}〜{nxt.strftime('%H:%M')}")
         current = nxt
 
+@tree.command(name="create")
+async def create(interaction: discord.Interaction, start: str, end: str, interval: int):
+
+    slots = make_slots(start, end, interval)
+
     msg = "📅 予約枠\n"
     for s in slots:
         msg += f"🟢 {s}\n"
 
-await interaction.followup.send(msg, view=SlotView(slots))
-
-bot.run(TOKEN)
+    await interaction.response.send_message(msg, view=SlotView(slots))
