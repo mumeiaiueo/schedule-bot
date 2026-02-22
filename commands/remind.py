@@ -9,8 +9,8 @@ async def remind_loop(bot):
         now = datetime.now(timezone.utc)
 
         # テスト窓（今-1分〜今+10分）
-        target_from = now - timedelta(minutes=1)
-        target_to   = now + timedelta(minutes=10)
+target_from = now + timedelta(minutes=3)
+target_to   = now + timedelta(minutes=3, seconds=20)
 
         print("⏱ now(UTC):", now.isoformat())
         print("⏱ window:", target_from.isoformat(), " -> ", target_to.isoformat())
