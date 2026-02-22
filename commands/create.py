@@ -10,8 +10,12 @@ JST = timezone(timedelta(hours=9))
 
 def setup(bot: discord.Client):
 
-    @bot.tree.command(name="create", description="開始/終了と間隔から予約パネルを作成")
-    @app_commands.describe(start="開始 例 18:00", end="終了 例 01:00")
+    @bot.tree.command(name="create", description="開始/終了/間隔から予約パネル作成 + 通知チャンネル設定（一本化）")
+    @app_commands.describe(
+        start="開始 例 18:00",
+        end="終了 例 01:00",
+        notify_channel="3分前通知を送るチャンネル",
+    )
     @app_commands.choices(interval=[
         app_commands.Choice(name="20", value=20),
         app_commands.Choice(name="25", value=25),
@@ -22,6 +26,7 @@ def setup(bot: discord.Client):
         start: str,
         end: str,
         interval: app_commands.Choice[int],
+        notify_channel: discord.TextChannel,  # ✅ 必須
     ):
         await interaction.response.defer(thinking=True)
 
@@ -31,7 +36,6 @@ def setup(bot: discord.Client):
                 await interaction.followup.send("❌ 枠が作れません（時間か間隔を確認）", ephemeral=True)
                 return
 
-            # ===== ここからDBにも枠を作る =====
             guild_id_int = interaction.guild.id
             today_jst = datetime.now(JST).date()
 
@@ -43,33 +47,44 @@ def setup(bot: discord.Client):
             cross_midnight = end_min <= start_min
 
             async with bot.pool.acquire() as conn:
+                # ✅ 通知チャンネルを保存（一本化）
+                await conn.execute(
+                    """
+                    INSERT INTO guild_settings (guild_id, notify_channel)
+                    VALUES ($1, $2)
+                    ON CONFLICT (guild_id)
+                    DO UPDATE SET notify_channel = EXCLUDED.notify_channel
+                    """,
+                    str(guild_id_int),
+                    str(notify_channel.id)
+                )
+
+                # このサーバーの枠を作り直し
                 await conn.execute("DELETE FROM slots WHERE guild_id = $1", guild_id_int)
 
                 for t in slots:
                     h, m = map(int, t.split(":"))
                     day = today_jst
-
                     if cross_midnight and (h * 60 + m) < start_min:
                         day = today_jst + timedelta(days=1)
 
                     start_at_jst = datetime(day.year, day.month, day.day, h, m, tzinfo=JST)
                     start_at_utc = start_at_jst.astimezone(timezone.utc)
 
-                    # ✅ slot_time がNOT NULLなので必ず入れる
+                    # slot_time が NOT NULL なので必ず入れる
                     await conn.execute(
                         """
                         INSERT INTO slots (guild_id, slot_time, start_at, user_id, notified)
                         VALUES ($1, $2, $3, NULL, false)
                         """,
                         guild_id_int,
-                        t,            # ← "18:00" などの枠文字列
+                        t,
                         start_at_utc
                     )
-            # ===== DB枠作成ここまで =====
 
-            # 既存のパネル表示ロジック（今まで通り）
+            # パネル表示（今まで通り）
             data = load_data()
-            g = get_guild(data, interaction.guild.id)
+            g = get_guild(data, guild_id_int)
 
             g["slots"] = slots
             g["reservations"] = {}
@@ -77,12 +92,20 @@ def setup(bot: discord.Client):
             g["meta"] = {"start_min": start_min, "cross_midnight": cross_midnight}
             save_data(data)
 
-            view = SlotView(guild_id=interaction.guild.id, page=0)
-            msg = await interaction.followup.send(content=build_panel_text(g), view=view)
+            view = SlotView(guild_id=guild_id_int, page=0)
+            msg = await interaction.followup.send(
+                content=build_panel_text(g),
+                view=view
+            )
 
             g["panel"]["channel_id"] = msg.channel.id
             g["panel"]["message_id"] = msg.id
             save_data(data)
+
+            await interaction.followup.send(
+                f"✅ 作成完了：通知チャンネルは {notify_channel.mention}",
+                ephemeral=True
+            )
 
         except Exception as e:
             await interaction.followup.send(f"❌ create失敗: {type(e).__name__}: {e}", ephemeral=True)
