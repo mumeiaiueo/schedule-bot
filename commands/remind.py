@@ -3,44 +3,42 @@ from datetime import datetime, timedelta, timezone
 import traceback
 import discord
 
-# 何秒前に送るか
-REMIND_SEC = 180
-# 取り逃し防止の許容幅（例：±90秒）
-WINDOW_SEC = 90
+REMIND_SEC = 180          # 3分前
+FETCH_BEFORE = 240        # 4分前まで広く取得（取り逃がし防止）
+FETCH_AFTER = 120         # 2分前まで取得
+ALLOW_RANGE = 15          # 180秒±15秒のみ送信（ここで精度を決める）
 
 @tasks.loop(seconds=20)
 async def remind_loop(bot):
     try:
         now = datetime.now(timezone.utc)
 
-        # “だいたい3分前”の範囲（広め）
-        target_from = now + timedelta(seconds=REMIND_SEC - WINDOW_SEC)
-        target_to   = now + timedelta(seconds=REMIND_SEC + WINDOW_SEC)
+        # 広めに候補取得
+        target_from = now + timedelta(seconds=FETCH_AFTER)
+        target_to   = now + timedelta(seconds=FETCH_BEFORE)
 
         async with bot.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT s.id, s.guild_id, s.user_id, s.start_at, gs.notify_channel, COALESCE(s.notified,false) AS notified
+                SELECT s.id, s.guild_id, s.user_id, s.start_at, gs.notify_channel
                 FROM slots s
                 JOIN guild_settings gs ON gs.guild_id = s.guild_id::text
                 WHERE s.start_at >= $1
                   AND s.start_at <  $2
+                  AND s.user_id IS NOT NULL
                   AND COALESCE(s.notified, false) = false
                   AND gs.notify_channel IS NOT NULL
-                  AND s.user_id IS NOT NULL
                 """,
                 target_from, target_to
             )
 
-        print("🔎 remind candidates:", len(rows))
-
         for r in rows:
             try:
-                start_at = r["start_at"]  # timestamptz
+                start_at = r["start_at"]
                 remaining = (start_at - now).total_seconds()
 
-                # 念のため、秒数でもう一段フィルタ（変な一致を防ぐ）
-                if not (REMIND_SEC - WINDOW_SEC <= remaining < REMIND_SEC + WINDOW_SEC):
+                # 🎯 ここで「ほぼ3分前だけ」に制限
+                if not (REMIND_SEC - ALLOW_RANGE <= remaining <= REMIND_SEC + ALLOW_RANGE):
                     continue
 
                 notify_channel = int(r["notify_channel"])
@@ -50,7 +48,7 @@ async def remind_loop(bot):
                 if ch is None:
                     ch = await bot.fetch_channel(notify_channel)
 
-                await ch.send(f"<@{user_id}> もうすぐあなたの番です！")
+                await ch.send(f"<@{user_id}> あと3分であなたの番です！")
 
                 async with bot.pool.acquire() as conn:
                     await conn.execute(
@@ -58,15 +56,16 @@ async def remind_loop(bot):
                         r["id"]
                     )
 
-            except (discord.Forbidden, discord.NotFound) as e:
-                print("⚠ channel access error:", e, "channel_id=", r.get("notify_channel"))
+                print("📣 3分前通知送信:", user_id)
+
             except Exception:
-                print("❌ per-row error:", dict(r))
+                print("❌ per-row error")
                 traceback.print_exc()
 
     except Exception:
-        print("❌ remind_loop crashed:")
+        print("❌ remind_loop crashed (outer)")
         traceback.print_exc()
+
 
 def start_remind(bot):
     if not remind_loop.is_running():
