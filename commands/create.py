@@ -10,12 +10,10 @@ JST = timezone(timedelta(hours=9))
 
 def setup(bot: discord.Client):
 
-    @bot.tree.command(name="create", description="開始/終了/間隔から予約パネル作成 + 通知チャンネル設定（一本化）")
-    @app_commands.describe(
-        start="開始 例 18:00",
-        end="終了 例 01:00",
-        notify_channel="3分前通知を送るチャンネル",
-    )
+   @bot.tree.command(
+    name="create2",
+    description="開始/終了/間隔から予約パネル作成 + 通知チャンネル設定（一本化）"
+)
     @app_commands.choices(interval=[
         app_commands.Choice(name="20", value=20),
         app_commands.Choice(name="25", value=25),
