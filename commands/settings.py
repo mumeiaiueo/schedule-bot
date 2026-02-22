@@ -8,6 +8,9 @@ def setup(bot: discord.Client):
     async def notifyset(interaction: discord.Interaction, channel: discord.TextChannel):
         await interaction.response.defer(ephemeral=True)
 
+        guild_id = str(interaction.guild.id)   # ⭐ 文字列にする（DBがTEXTでも落ちない）
+        ch_id = int(channel.id)
+
         async with bot.pool.acquire() as conn:
             await conn.execute(
                 """
@@ -16,8 +19,8 @@ def setup(bot: discord.Client):
                 ON CONFLICT (guild_id)
                 DO UPDATE SET notify_channel = EXCLUDED.notify_channel
                 """,
-                interaction.guild.id,
-                channel.id
+                guild_id,
+                ch_id
             )
 
         await interaction.followup.send(f"✅ 通知チャンネルを {channel.mention} に設定しました", ephemeral=True)
