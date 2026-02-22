@@ -9,8 +9,8 @@ async def remind_loop(bot):
         now = datetime.now(timezone.utc)
         print("⏱ remind_loop alive:", now.isoformat())
 
-        target_from = now + timedelta(minutes=3)
-        target_to   = now + timedelta(minutes=3, seconds=20)
+        target_from = now - timedelta(minutes=1)
+target_to   = now + timedelta(minutes=10)
 
         async with bot.pool.acquire() as conn:
             rows = await conn.fetch(
