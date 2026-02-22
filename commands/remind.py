@@ -6,7 +6,7 @@ import discord
 REMIND_SEC = 180          # 3分前
 FETCH_BEFORE = 240        # 4分前まで広く取得（取り逃がし防止）
 FETCH_AFTER = 120         # 2分前まで取得
-ALLOW_RANGE = 15          # 180秒±15秒のみ送信（ここで精度を決める）
+ALLOW_RANGE = 15          # 180秒±15秒のみ送信（精度）
 
 @tasks.loop(seconds=20)
 async def remind_loop(bot):
@@ -27,17 +27,21 @@ async def remind_loop(bot):
                   AND s.start_at <  $2
                   AND s.user_id IS NOT NULL
                   AND COALESCE(s.notified, false) = false
+                  AND COALESCE(s.is_break, false) = false   -- 🟡休憩除外
                   AND gs.notify_channel IS NOT NULL
                 """,
                 target_from, target_to
             )
+
+        if rows:
+            print("🔎 remind candidates:", len(rows))
 
         for r in rows:
             try:
                 start_at = r["start_at"]
                 remaining = (start_at - now).total_seconds()
 
-                # 🎯 ここで「ほぼ3分前だけ」に制限
+                # 🎯 3分±許容範囲のみ送信
                 if not (REMIND_SEC - ALLOW_RANGE <= remaining <= REMIND_SEC + ALLOW_RANGE):
                     continue
 
@@ -46,10 +50,15 @@ async def remind_loop(bot):
 
                 ch = bot.get_channel(notify_channel)
                 if ch is None:
-                    ch = await bot.fetch_channel(notify_channel)
+                    try:
+                        ch = await bot.fetch_channel(notify_channel)
+                    except Exception:
+                        print("⚠ channel fetch failed:", notify_channel)
+                        continue
 
-                await ch.send(f"<@{user_id}> もうすぐあなたの番です！")
+                await ch.send(f"<@{user_id}> もうすぐあなたの番です！（3分前）")
 
+                # 通知フラグ更新
                 async with bot.pool.acquire() as conn:
                     await conn.execute(
                         "UPDATE slots SET notified=true WHERE id=$1",
@@ -65,6 +74,12 @@ async def remind_loop(bot):
     except Exception:
         print("❌ remind_loop crashed (outer)")
         traceback.print_exc()
+
+
+@remind_loop.error
+async def remind_loop_error(exc):
+    print("❌ remind_loop stopped:", exc)
+    traceback.print_exc()
 
 
 def start_remind(bot):
