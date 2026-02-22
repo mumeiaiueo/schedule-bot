@@ -8,17 +8,19 @@ TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 class Bot(commands.Bot):
+    def sid(self, x) -> str:
+        """DiscordのID(int)をDB用の文字列に統一"""
+        return str(x) if x is not None else None
+
     async def setup_hook(self):
         if not TOKEN:
             raise RuntimeError("TOKEN が環境変数にありません")
         if not DATABASE_URL:
             raise RuntimeError("DATABASE_URL が環境変数にありません")
 
-        # ⭐ DBプール作成 + テーブル作成
         self.pool = await init_db_pool(DATABASE_URL)
         print("✅ DB ready")
 
-        # コマンド登録（今あるやつを順に）
         from commands.create import setup as create_setup
         create_setup(self)
 
@@ -34,15 +36,11 @@ class Bot(commands.Bot):
         except Exception as e:
             print("⚠ debug.py not loaded:", e)
 
-        # リマインドは次のステップでDB版に差し替える（今日はまだOK）
-        # from commands.remind import start_loop
-        # await start_loop(self)
-
         await self.tree.sync()
         print("✅ commands synced")
 
 intents = discord.Intents.default()
-intents.message_content = False  # 公開用：基本OFF（スラッシュ運用）
+intents.message_content = False
 
 bot = Bot(command_prefix="!", intents=intents)
 
