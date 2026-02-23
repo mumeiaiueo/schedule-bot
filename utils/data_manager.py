@@ -1,31 +1,35 @@
 import json
 import os
 
-DATA_PATH = os.path.join("data", "data.json")
+DATA_FILE = "data.json"
+
 
 def load_data():
-    try:
-        with open(DATA_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {"guilds": {}}
+    if not os.path.exists(DATA_FILE):
+        return {}
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
 
 def save_data(data):
-    os.makedirs("data", exist_ok=True)
-    with open(DATA_PATH, "w", encoding="utf-8") as f:
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def get_guild(data, guild_id: int):
-    gid = str(guild_id)
-    if gid not in data["guilds"]:
-        data["guilds"][gid] = {
-            "notify_channel": None,  # ← 修正
+
+def get_channel(data, channel_id: int):
+    channel_id = str(channel_id)
+
+    if channel_id not in data:
+        data[channel_id] = {
+            "title": "",
+            "slots": [],
+            "reservations": {},
+            "breaks": [],
+            "meta": {},
             "panel": {
                 "channel_id": None,
                 "message_id": None
-            },
-            "slots": [],
-            "reservations": {},
-            "reminded": []
+            }
         }
-    return data["guilds"][gid]
+
+    return data[channel_id]
