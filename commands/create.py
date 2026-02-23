@@ -1,6 +1,6 @@
 import discord
 from discord import app_commands
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date as dt_date
 
 from utils.time_utils import generate_slots
 from utils.data_manager import load_data, save_data, get_guild
@@ -8,14 +8,29 @@ from views.slot_view import SlotView, build_panel_text
 
 JST = timezone(timedelta(hours=9))
 
+def resolve_base_date(date_arg: str | None) -> dt_date:
+    """today / tomorrow / YYYY-MM-DD をJST基準日(date)に変換"""
+    today = datetime.now(JST).date()
+    s = (date_arg or "today").strip().lower()
+
+    if s in ("today", "今日"):
+        return today
+    if s in ("tomorrow", "明日"):
+        return today + timedelta(days=1)
+
+    # YYYY-MM-DD
+    y, m, d = map(int, s.split("-"))
+    return dt_date(y, m, d)
+
+
 def setup(bot: discord.Client):
 
-    # ✅ コマンド名を /setup に変更（一本化を確実に反映させるため）
     @bot.tree.command(name="setup2", description="枠作成 + 通知設定（一本化）")
     @app_commands.describe(
         start="開始 例 07:30",
         end="終了 例 08:30",
         notify_channel="3分前通知を送るチャンネル",
+        date="基準日: today / tomorrow / YYYY-MM-DD（例: 2026-02-24）",
     )
     @app_commands.choices(interval=[
         app_commands.Choice(name="20", value=20),
@@ -27,7 +42,8 @@ def setup(bot: discord.Client):
         start: str,
         end: str,
         interval: app_commands.Choice[int],
-        notify_channel: discord.TextChannel,  # ✅ 必須
+        notify_channel: discord.TextChannel,
+        date: str = "today",
     ):
         await interaction.response.defer(thinking=True)
 
@@ -38,7 +54,8 @@ def setup(bot: discord.Client):
                 return
 
             guild_id_int = interaction.guild.id
-            today_jst = datetime.now(JST).date()
+            base_date = resolve_base_date(date)  # ✅ ここが追加
+            today_jst = base_date               # 以降のロジックはそのまま
 
             # 日跨ぎ判定
             start_h, start_m = map(int, start.split(":"))
@@ -89,7 +106,7 @@ def setup(bot: discord.Client):
             g["slots"] = slots
             g["reservations"] = {}
             g["reminded"] = []
-            g["meta"] = {"start_min": start_min, "cross_midnight": cross_midnight}
+            g["meta"] = {"start_min": start_min, "cross_midnight": cross_midnight, "base_date": str(today_jst)}
             save_data(data)
 
             view = SlotView(guild_id=guild_id_int, page=0)
@@ -100,9 +117,11 @@ def setup(bot: discord.Client):
             save_data(data)
 
             await interaction.followup.send(
-                f"✅ セットアップ完了：通知チャンネルは {notify_channel.mention}",
+                f"✅ セットアップ完了（基準日: {today_jst} JST）：通知チャンネルは {notify_channel.mention}",
                 ephemeral=True
             )
 
+        except ValueError:
+            await interaction.followup.send("❌ date は today / tomorrow / YYYY-MM-DD の形式で入力してください", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ setup失敗: {type(e).__name__}: {e}", ephemeral=True)
