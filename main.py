@@ -79,7 +79,7 @@ async def runner():
     while True:
         try:
             log.info("🔌 bot starting...")
-            await bot.start(TOKEN, reconnect=True)
+            await bot.start(TOKEN)
         except Exception as e:
             log.error("💥 bot crashed: %s", e)
             traceback.print_exc()
