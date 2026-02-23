@@ -20,6 +20,7 @@ class MyClient(discord.Client):
         super().__init__(intents=intents)
         self.tree = discord.app_commands.CommandTree(self)
         self.dm = DataManager()
+        self._synced = False  # ★再接続のたびにsync連打しない
 
     async def setup_hook(self):
         register_setup(self.tree, self.dm)
@@ -28,8 +29,13 @@ class MyClient(discord.Client):
         register_notify(self.tree, self.dm)
 
     async def on_ready(self):
-        await self.tree.sync()
+        # ★syncは最初の1回だけ（429対策）
+        if not self._synced:
+            await self.tree.sync()
+            self._synced = True
+
         print(f"✅ Logged in as {self.user}")
+
         if not reminder_loop.is_running():
             reminder_loop.start(self)
 
@@ -43,7 +49,7 @@ async def reminder_loop(bot: MyClient):
         print("reminder_loop error:", repr(e))
 
 async def main():
-    if not TOKEN:
+    if not TOKEN or not TOKEN.strip():
         raise RuntimeError("DISCORD_TOKEN が未設定です")
 
     # 429対策：失敗しても落ちずに待って再試行
@@ -52,11 +58,10 @@ async def main():
             async with client:
                 await client.start(TOKEN)
         except discord.HTTPException as e:
-            # 429などのHTTPエラーは少し待ってリトライ
             print("discord HTTPException:", repr(e))
-            await asyncio.sleep(60)
+            await asyncio.sleep(90)
         except Exception as e:
             print("fatal error:", repr(e))
-            await asyncio.sleep(60)
+            await asyncio.sleep(90)
 
 asyncio.run(main())
