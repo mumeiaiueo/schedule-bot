@@ -87,15 +87,13 @@ async def runner():
             try:
                 if hasattr(bot, "pool") and bot.pool is not None:
                     await bot.pool.close()
-                    log.info("✅ DB pool closed")
             except Exception:
                 traceback.print_exc()
 
-            log.info("⏳ restarting in 10 seconds...")
+            log.info("⏳ restarting in 60 seconds...")
             await asyncio.sleep(60)
-        else:
             log.warning("bot.start returned; restarting in 10 seconds...")
-            await asyncio.sleep(60)
+            await asyncio.sleep(10)
 
 
 if __name__ == "__main__":
