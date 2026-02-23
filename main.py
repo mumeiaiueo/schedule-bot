@@ -1,3 +1,4 @@
+import asyncio
 import os
 import discord
 from discord.ext import tasks
@@ -32,71 +33,30 @@ class MyClient(discord.Client):
         if not reminder_loop.is_running():
             reminder_loop.start(self)
 
-    async def on_interaction(self, interaction: discord.Interaction):
-        # ボタン/セレクトの処理
-        if interaction.type != discord.InteractionType.component:
-            return
-
-        cid = interaction.data.get("custom_id") if interaction.data else None
-        if not cid or not cid.startswith("panel:"):
-            return
-
-        # 3秒失敗対策
-        await interaction.response.defer(ephemeral=True)
-
-        # slotボタン（予約/キャンセル トグル）
-        if cid.startswith("panel:slot:"):
-            _, _, pid, sid = cid.split(":")
-            panel_id = int(pid)
-            slot_id = int(sid)
-
-            ok, msg = await self.dm.toggle_reserve(
-                slot_id=slot_id,
-                user_id=str(interaction.user.id),
-                user_name=interaction.user.display_name,
-            )
-            await interaction.followup.send(msg, ephemeral=True)
-            await self.dm.render_panel(self, panel_id)
-            return
-
-        # 休憩切替（管理者のみ）→ セレクトを出す
-        if cid.startswith("panel:breaktoggle:"):
-            _, _, pid = cid.split(":")
-            panel_id = int(pid)
-
-            if not interaction.user.guild_permissions.administrator:
-                await interaction.followup.send("❌ 管理者のみ実行できます", ephemeral=True)
-                return
-
-            view = await self.dm.build_break_select_view(panel_id)
-            await interaction.followup.send("休憩にする/解除する時間を選んで👇", view=view, ephemeral=True)
-            return
-
-        # 休憩セレクト（管理者のみ）
-        if cid.startswith("panel:breakselect:"):
-            _, _, pid = cid.split(":")
-            panel_id = int(pid)
-
-            if not interaction.user.guild_permissions.administrator:
-                await interaction.followup.send("❌ 管理者のみ実行できます", ephemeral=True)
-                return
-
-            values = interaction.data.get("values") or []
-            if not values:
-                await interaction.followup.send("❌ 選択を取得できませんでした", ephemeral=True)
-                return
-
-            slot_id = int(values[0])
-            ok, msg = await self.dm.toggle_break_slot(panel_id, slot_id)
-            await interaction.followup.send(("✅ " if ok else "❌ ") + msg, ephemeral=True)
-            await self.dm.render_panel(self, panel_id)
-            return
-
-
 client = MyClient()
 
 @tasks.loop(seconds=20)
 async def reminder_loop(bot: MyClient):
-    await bot.dm.send_3min_reminders(bot)
+    try:
+        await bot.dm.send_3min_reminders(bot)
+    except Exception as e:
+        print("reminder_loop error:", repr(e))
 
-client.run(TOKEN)
+async def main():
+    if not TOKEN:
+        raise RuntimeError("DISCORD_TOKEN が未設定です")
+
+    # 429対策：失敗しても落ちずに待って再試行
+    while True:
+        try:
+            async with client:
+                await client.start(TOKEN)
+        except discord.HTTPException as e:
+            # 429などのHTTPエラーは少し待ってリトライ
+            print("discord HTTPException:", repr(e))
+            await asyncio.sleep(60)
+        except Exception as e:
+            print("fatal error:", repr(e))
+            await asyncio.sleep(60)
+
+asyncio.run(main())
