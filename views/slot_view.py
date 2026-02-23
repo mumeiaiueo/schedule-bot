@@ -6,13 +6,14 @@ from utils.data_manager import load_data, save_data, get_guild
 SLOTS_PER_PAGE = 25
 JST = timezone(timedelta(hours=9))
 
+
 def build_panel_text(g):
     lines = ["📅 予約枠"]
     breaks = set(g.get("breaks", []))
 
     for s in g["slots"]:
         if s in breaks:
-            lines.append(f"🟡 {s} 休憩")
+            lines.append(f"⚪ {s} 休憩")
         elif s in g["reservations"]:
             uid = g["reservations"][s]
             lines.append(f"🔴 {s} <@{uid}>")
@@ -25,20 +26,27 @@ class SlotButton(discord.ui.Button):
     def __init__(self, slot: str, reserved_user_id: int | None, is_break: bool):
         self.slot = slot
 
+        # 休憩枠 → グレー & 押せない
         if is_break:
-            label = f"🟡 {slot}"
-            style = discord.ButtonStyle.secondary
-            super().__init__(label=label, style=style, disabled=True)
+            super().__init__(
+                label=f"⚪ {slot}",
+                style=discord.ButtonStyle.secondary,
+                disabled=True
+            )
             return
 
+        # 予約済 → 赤
         if reserved_user_id:
-            label = f"🔴 {slot}"
-            style = discord.ButtonStyle.danger
+            super().__init__(
+                label=f"🔴 {slot}",
+                style=discord.ButtonStyle.danger
+            )
+        # 空き → 緑
         else:
-            label = f"🟢 {slot}"
-            style = discord.ButtonStyle.success
-
-        super().__init__(label=label, style=style)
+            super().__init__(
+                label=f"🟢 {slot}",
+                style=discord.ButtonStyle.success
+            )
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -53,15 +61,12 @@ class SlotButton(discord.ui.Button):
 
         current = g["reservations"].get(self.slot)
 
-        # 他人予約済
         if current and current != interaction.user.id:
             await interaction.followup.send("❌ すでに埋まっています", ephemeral=True)
             return
 
-        # ✅ DB更新は slot_time で確実に当てる（start_at完全一致のズレ事故防止）
         async with interaction.client.pool.acquire() as conn:
             if current == interaction.user.id:
-                # キャンセル
                 await conn.execute(
                     """
                     UPDATE slots
@@ -72,7 +77,6 @@ class SlotButton(discord.ui.Button):
                     self.slot
                 )
             else:
-                # 予約（空きのみ）
                 result = await conn.execute(
                     """
                     UPDATE slots
@@ -90,7 +94,6 @@ class SlotButton(discord.ui.Button):
                     await interaction.followup.send("❌ すでに埋まっています（DB側）", ephemeral=True)
                     return
 
-        # JSON側更新
         if current == interaction.user.id:
             del g["reservations"][self.slot]
             save_data(data)
@@ -100,7 +103,6 @@ class SlotButton(discord.ui.Button):
             save_data(data)
             await interaction.followup.send("✅ 予約完了", ephemeral=True)
 
-        # パネル更新
         view = SlotView(interaction.guild.id, page=self.view.page)
         await interaction.message.edit(content=build_panel_text(g), view=view)
 
@@ -121,7 +123,6 @@ class BreakSelect(discord.ui.Select):
         self.guild_id = guild_id
 
     async def callback(self, interaction: discord.Interaction):
-        # 管理者チェック
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ 管理者のみ操作できます", ephemeral=True)
             return
@@ -131,13 +132,10 @@ class BreakSelect(discord.ui.Select):
 
         slot = self.values[0]
         breaks = set(g.get("breaks", []))
-
-        # トグル
         new_break = slot not in breaks
 
         async with interaction.client.pool.acquire() as conn:
             if new_break:
-                # 休憩ON：予約を消して通知フラグも戻す
                 await conn.execute(
                     """
                     UPDATE slots
@@ -156,7 +154,6 @@ class BreakSelect(discord.ui.Select):
                     self.guild_id, slot
                 )
 
-        # JSONも同期
         if new_break:
             breaks.add(slot)
             if slot in g["reservations"]:
@@ -172,11 +169,6 @@ class BreakSelect(discord.ui.Select):
             ephemeral=True
         )
 
-        # パネル更新（元メッセージを更新）
-        # interaction.message は Selectのメッセージなので、パネルの方を更新する必要がある
-        # → 直前に押した管理ボタン側で、パネルメッセージを編集できるよう View に持たせる
-        # 今回は簡単に「次のボタン操作で表示反映」でもOKですが、即時反映したい場合は下の注記参照。
-
 
 class AdminBreakButton(discord.ui.Button):
     def __init__(self):
@@ -190,7 +182,6 @@ class AdminBreakButton(discord.ui.Button):
         data = load_data()
         g = get_guild(data, interaction.guild.id)
 
-        # このページの枠だけ出す（選びやすい）
         page = self.view.page
         start = page * SLOTS_PER_PAGE
         end = start + SLOTS_PER_PAGE
@@ -241,7 +232,6 @@ class SlotView(discord.ui.View):
             reserved = g["reservations"].get(s)
             self.add_item(SlotButton(s, reserved, is_break=(s in breaks)))
 
-        # 管理者用：休憩切替ボタン（1個だけ）
         self.add_item(AdminBreakButton())
 
         if page > 0:
