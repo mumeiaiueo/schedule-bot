@@ -92,10 +92,10 @@ async def runner():
                 traceback.print_exc()
 
             log.info("⏳ restarting in 10 seconds...")
-            await asyncio.sleep(10)
+            await asyncio.sleep(60)
         else:
             log.warning("bot.start returned; restarting in 10 seconds...")
-            await asyncio.sleep(10)
+            await asyncio.sleep(60)
 
 
 if __name__ == "__main__":
