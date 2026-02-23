@@ -1,4 +1,4 @@
-iimport os
+import os
 from supabase import create_client
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -6,6 +6,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 if not SUPABASE_URL:
     raise RuntimeError("SUPABASE_URL が未設定です")
+
 if not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_KEY が未設定です")
 
