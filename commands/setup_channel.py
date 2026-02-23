@@ -105,17 +105,9 @@ def setup(bot: discord.Client):
                     )
                     start_at_utc = start_at_jst.astimezone(timezone.utc)
 
-                    await conn.execute(
-                        """
-                        INSERT INTO slots
-                        (guild_id, channel_id, slot_time, start_at, user_id, notified, is_break)
-                        VALUES ($1, $2, $3, $4, NULL, false, false)
-                        """,
-                        guild_id,
-                        channel_id,
-                        t,
-                        start_at_utc
+                       day_date.year, day_date.month, day_date.day, h, m, tzinfo=JST
                     )
+                    start_at_utc = start_at_jst.astimezone(timezone.
 
             # JSON保存（表示用）
             data = load_data()
