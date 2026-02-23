@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from utils.time_utils import generate_slots
 from utils.data_manager import load_data, save_data, get_channel
-from views.slot_view_channel import SlotViewChannel, build_panel_text_channel
+from views.slot_view import SlotView, build_panel_text
 
 JST = timezone(timedelta(hours=9))
 
