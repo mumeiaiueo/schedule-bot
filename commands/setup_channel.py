@@ -94,6 +94,7 @@ def setup(bot: discord.Client):
                 )
 
 # 枠をDBへ保存
+# 枠をDBへ保存
 for t in slots:
     h, m = map(int, t.split(":"))
     day_date = base_date
