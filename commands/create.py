@@ -8,8 +8,8 @@ from views.slot_view import SlotView, build_panel_text
 
 JST = timezone(timedelta(hours=9))
 
+
 def resolve_base_date(date_arg: str | None) -> dt_date:
-    """today / tomorrow / YYYY-MM-DD をJST基準日(date)に変換"""
     today = datetime.now(JST).date()
     s = (date_arg or "today").strip().lower()
 
@@ -18,19 +18,22 @@ def resolve_base_date(date_arg: str | None) -> dt_date:
     if s in ("tomorrow", "明日"):
         return today + timedelta(days=1)
 
-    # YYYY-MM-DD
     y, m, d = map(int, s.split("-"))
     return dt_date(y, m, d)
 
 
 def setup(bot: discord.Client):
 
-    @bot.tree.command(name="setup2", description="枠作成 + 通知設定（一本化）")
+    # =============================
+    # 🔧 SETUP（管理者のみ）
+    # =============================
+    @bot.tree.command(name="setup2", description="枠作成 + 通知設定（管理者のみ）")
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         start="開始 例 07:30",
         end="終了 例 08:30",
         notify_channel="3分前通知を送るチャンネル",
-        date="基準日: today / tomorrow / YYYY-MM-DD（例: 2026-02-24）",
+        date="基準日: today / tomorrow / YYYY-MM-DD",
     )
     @app_commands.choices(interval=[
         app_commands.Choice(name="20", value=20),
@@ -50,14 +53,12 @@ def setup(bot: discord.Client):
         try:
             slots = generate_slots(start, end, interval.value)
             if not slots:
-                await interaction.followup.send("❌ 枠が作れません（時間か間隔を確認）", ephemeral=True)
+                await interaction.followup.send("❌ 枠が作れません", ephemeral=True)
                 return
 
             guild_id_int = interaction.guild.id
-            base_date = resolve_base_date(date)  # ✅ ここが追加
-            today_jst = base_date               # 以降のロジックはそのまま
+            base_date = resolve_base_date(date)
 
-            # 日跨ぎ判定
             start_h, start_m = map(int, start.split(":"))
             end_h, end_m = map(int, end.split(":"))
             start_min = start_h * 60 + start_m
@@ -65,7 +66,22 @@ def setup(bot: discord.Client):
             cross_midnight = end_min <= start_min
 
             async with bot.pool.acquire() as conn:
-                # ✅ 通知チャンネル保存（一本化）
+
+                # 🔴 既存枠チェック（上書き防止）
+                existing = await conn.fetchval(
+                    "SELECT COUNT(*) FROM slots WHERE guild_id = $1",
+                    guild_id_int
+                )
+
+                if existing > 0:
+                    await interaction.followup.send(
+                        "⚠️ 既に枠が存在します。\n"
+                        "上書きする場合は /reset を実行してください。",
+                        ephemeral=True
+                    )
+                    return
+
+                # 通知チャンネル保存
                 await conn.execute(
                     """
                     INSERT INTO guild_settings (guild_id, notify_channel)
@@ -77,36 +93,39 @@ def setup(bot: discord.Client):
                     str(notify_channel.id)
                 )
 
-                # 既存枠削除 → 作り直し
-                await conn.execute("DELETE FROM slots WHERE guild_id = $1", guild_id_int)
-
+                # 枠作成
                 for t in slots:
                     h, m = map(int, t.split(":"))
-                    day = today_jst
+                    day = base_date
+
                     if cross_midnight and (h * 60 + m) < start_min:
-                        day = today_jst + timedelta(days=1)
+                        day = base_date + timedelta(days=1)
 
                     start_at_jst = datetime(day.year, day.month, day.day, h, m, tzinfo=JST)
                     start_at_utc = start_at_jst.astimezone(timezone.utc)
 
                     await conn.execute(
                         """
-                        INSERT INTO slots (guild_id, slot_time, start_at, user_id, notified)
-                        VALUES ($1, $2, $3, NULL, false)
+                        INSERT INTO slots (guild_id, slot_time, start_at, user_id, notified, is_break)
+                        VALUES ($1, $2, $3, NULL, false, false)
                         """,
                         guild_id_int,
                         t,
                         start_at_utc
                     )
 
-            # パネル表示（従来通り）
+            # JSON更新
             data = load_data()
             g = get_guild(data, guild_id_int)
 
             g["slots"] = slots
             g["reservations"] = {}
-            g["reminded"] = []
-            g["meta"] = {"start_min": start_min, "cross_midnight": cross_midnight, "base_date": str(today_jst)}
+            g["breaks"] = []
+            g["meta"] = {
+                "start_min": start_min,
+                "cross_midnight": cross_midnight,
+                "base_date": str(base_date)
+            }
             save_data(data)
 
             view = SlotView(guild_id=guild_id_int, page=0)
@@ -117,11 +136,37 @@ def setup(bot: discord.Client):
             save_data(data)
 
             await interaction.followup.send(
-                f"✅ セットアップ完了（基準日: {today_jst} JST）：通知チャンネルは {notify_channel.mention}",
+                f"✅ セットアップ完了（{base_date} JST）\n通知チャンネル: {notify_channel.mention}",
                 ephemeral=True
             )
 
-        except ValueError:
-            await interaction.followup.send("❌ date は today / tomorrow / YYYY-MM-DD の形式で入力してください", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"❌ setup失敗: {type(e).__name__}: {e}", ephemeral=True)
+            await interaction.followup.send(
+                f"❌ setup失敗: {type(e).__name__}: {e}",
+                ephemeral=True
+            )
+
+    # =============================
+    # 🗑 RESET（管理者のみ）
+    # =============================
+    @bot.tree.command(name="reset", description="既存の枠を削除（管理者のみ）")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def reset_cmd(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        async with bot.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM slots WHERE guild_id = $1",
+                interaction.guild.id
+            )
+
+        # JSONもリセット
+        data = load_data()
+        g = get_guild(data, interaction.guild.id)
+
+        g["slots"] = []
+        g["reservations"] = {}
+        g["breaks"] = []
+        save_data(data)
+
+        await interaction.followup.send("✅ 枠をリセットしました", ephemeral=True)
