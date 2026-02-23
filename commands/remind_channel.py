@@ -9,10 +9,12 @@ ALLOW_RANGE = 20          # ±20秒許容
 
 @tasks.loop(seconds=20)
 async def remind_loop_channel(bot):
+    print("Checking reminders...")  # ✅ ログに出したいならこれ
 
     try:
         now = datetime.now(timezone.utc)
 
+        # 2分後〜4分後に始まる枠を拾っておく（広め）
         target_from = now + timedelta(seconds=FETCH_AFTER)
         target_to   = now + timedelta(seconds=FETCH_BEFORE)
 
@@ -37,10 +39,14 @@ async def remind_loop_channel(bot):
                 target_to
             )
 
+        # ✅ デバッグ（0件問題がすぐ分かる）
+        print(f"Checking reminders... rows={len(rows)} window=({target_from.isoformat()} .. {target_to.isoformat()})")
+
         for r in rows:
             try:
                 remaining = (r["start_at"] - now).total_seconds()
 
+                # 3分前±20秒だけ送る
                 if not (REMIND_SEC - ALLOW_RANGE <= remaining <= REMIND_SEC + ALLOW_RANGE):
                     continue
 
@@ -59,7 +65,7 @@ async def remind_loop_channel(bot):
                         r["id"]
                     )
 
-                print("📣 通知送信:", user_id)
+                print("📣 通知送信:", user_id, "remaining=", remaining)
 
             except Exception:
                 print("❌ per-row error")
@@ -68,6 +74,13 @@ async def remind_loop_channel(bot):
     except Exception:
         print("❌ remind_loop_channel crashed")
         traceback.print_exc()
+
+
+@remind_loop_channel.before_loop
+async def before_remind_loop_channel():
+    # bot がログインして ready になるまで待つ
+    # （bot引数はここでは取れないので tasks側で待つ方式ではなく、start側で待つのが理想）
+    pass
 
 
 def start_remind_channel(bot):
