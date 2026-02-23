@@ -44,27 +44,24 @@ def setup(bot: discord.Client):
         notify_channel: discord.TextChannel,
         title: str = ""
     ):
-
         await interaction.response.defer(thinking=True)
 
         try:
-            channel_id = interaction.channel.id
-            guild_id = interaction.guild.id
+            # ✅ DB(text)想定：全部 str に統一
+            channel_id = str(interaction.channel.id)
+            guild_id = str(interaction.guild.id)
 
-            # 枠生成
             slots = generate_slots(start, end, interval.value)
             if not slots:
                 await interaction.followup.send("❌ 枠が作れません", ephemeral=True)
                 return
 
-            # 今日 / 明日
             base_date = datetime.now(JST).date()
             if day.value == "tomorrow":
                 base_date += timedelta(days=1)
 
             start_h, start_m = map(int, start.split(":"))
             end_h, end_m = map(int, end.split(":"))
-
             start_min = start_h * 60 + start_m
             end_min = end_h * 60 + end_m
             cross_midnight = end_min <= start_min
@@ -76,7 +73,6 @@ def setup(bot: discord.Client):
                     "SELECT COUNT(*) FROM slots WHERE channel_id = $1",
                     channel_id
                 )
-
                 if exists and exists > 0:
                     await interaction.followup.send(
                         "⚠️ このチャンネルには既に枠があります。\n/reset_channel を実行してください。",
@@ -87,21 +83,20 @@ def setup(bot: discord.Client):
                 # 通知設定（チャンネル単位）
                 await conn.execute(
                     """
-                    INSERT INTO guild_settings (guild_id, notify_channel, channel_id)
+                    INSERT INTO guild_settings (channel_id, guild_id, notify_channel)
                     VALUES ($1, $2, $3)
                     ON CONFLICT (channel_id)
                     DO UPDATE SET notify_channel = EXCLUDED.notify_channel
                     """,
-                    str(guild_id),
-                    str(notify_channel.id),
-                    channel_id
+                    channel_id,
+                    guild_id,
+                    str(notify_channel.id)
                 )
 
                 # 枠をDBへ保存
                 for t in slots:
                     h, m = map(int, t.split(":"))
                     day_date = base_date
-
                     if cross_midnight and (h * 60 + m) < start_min:
                         day_date += timedelta(days=1)
 
@@ -124,7 +119,7 @@ def setup(bot: discord.Client):
 
             # JSON保存（表示用）
             data = load_data()
-            c = get_channel(data, channel_id)
+            c = get_channel(data, channel_id)  # ✅ keyもstrになる
 
             c["title"] = title.strip()
             c["slots"] = slots
@@ -135,7 +130,6 @@ def setup(bot: discord.Client):
                 "cross_midnight": cross_midnight,
                 "base_date": str(base_date)
             }
-
             save_data(data)
 
             # パネル表示
@@ -145,8 +139,9 @@ def setup(bot: discord.Client):
                 view=view
             )
 
-            c["panel"]["channel_id"] = msg.channel.id
-            c["panel"]["message_id"] = msg.id
+            c.setdefault("panel", {})
+            c["panel"]["channel_id"] = str(msg.channel.id)
+            c["panel"]["message_id"] = str(msg.id)
             save_data(data)
 
             await interaction.followup.send(
