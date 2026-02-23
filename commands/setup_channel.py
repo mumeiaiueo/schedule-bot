@@ -100,9 +100,14 @@ def setup(bot: discord.Client):
                     if cross_midnight and (h * 60 + m) < start_min:
                         day_date += timedelta(days=1)
 
-                    start_at_jst = datetime(
-                        day_date.year, day_date.month, day_date.day, h, m, tzinfo=JST
-                    )
+                    start_at = datetime(
+    day_date.year,
+    day_date.month,
+    day_date.day,
+    h,
+    m,
+    tzinfo=JST
+)
                     start_at_utc = start_at_jst.astimezone(timezone.utc)
 
                        day_date.year, day_date.month, day_date.day, h, m, tzinfo=JST
