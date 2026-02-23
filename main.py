@@ -1,64 +1,110 @@
-from discord.ext import tasks
-from datetime import datetime, timedelta, timezone
+import os
+import asyncio
+import logging
 import traceback
+
 import discord
+from discord.ext import commands
 
-REMIND_SEC = 180
-ALLOW_RANGE = 15
+from utils.db import init_db_pool
 
-@tasks.loop(seconds=20)
-async def remind_loop(bot):
-    try:
-        now = datetime.now(timezone.utc)
-        target_from = now + timedelta(seconds=120)
-        target_to   = now + timedelta(seconds=240)
+# ===== ログ（落ちた理由を必ず出す）=====
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("schedule-bot")
 
-        async with bot.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT s.id, s.user_id, s.start_at, gs.notify_channel
-                FROM slots s
-                JOIN guild_settings gs ON gs.guild_id = s.guild_id::text
-                WHERE s.start_at >= $1
-                  AND s.start_at <  $2
-                  AND s.user_id IS NOT NULL
-                  AND COALESCE(s.notified,false) = false
-                  AND gs.notify_channel IS NOT NULL
-                """,
-                target_from, target_to
-            )
+TOKEN = os.getenv("TOKEN")  # RenderのEnvironmentで TOKEN
+DATABASE_URL = os.getenv("DATABASE_URL")  # RenderのEnvironmentで DATABASE_URL
 
-        for r in rows:
+
+class Bot(commands.Bot):
+    def sid(self, x) -> str:
+        """DiscordのID(int)をDB用の文字列に統一"""
+        return str(x) if x is not None else None
+
+    async def setup_hook(self):
+        log.info("🚀 setup_hook start")
+
+        # 環境変数チェック（値は出さない）
+        if not TOKEN:
+            raise RuntimeError("TOKEN が環境変数にありません")
+        if not DATABASE_URL:
+            raise RuntimeError("DATABASE_URL が環境変数にありません")
+
+        # DB接続
+        self.pool = await init_db_pool(DATABASE_URL)
+        log.info("✅ DB ready")
+
+        # コマンド登録
+        from commands.create import setup as create_setup
+        create_setup(self)
+
+        try:
+            from commands.settings import setup as settings_setup
+            settings_setup(self)
+        except Exception as e:
+            log.warning("⚠ settings.py not loaded: %s", e)
+
+        try:
+            from commands.debug import setup as debug_setup
+            debug_setup(self)
+        except Exception as e:
+            log.warning("⚠ debug.py not loaded: %s", e)
+
+        # remind 起動（落ちてもbot全体は落とさない）
+        try:
+            from commands.remind import start_remind
+            start_remind(self)
+            log.info("✅ remind started")
+        except Exception as e:
+            log.error("⚠ remind 起動失敗: %s", e)
+            traceback.print_exc()
+
+        # コマンド同期（ここで落ちることもあるのでログ）
+        await self.tree.sync()
+        log.info("✅ commands synced")
+
+        log.info("🚀 setup_hook end")
+
+
+intents = discord.Intents.default()
+intents.message_content = False  # スラッシュ運用なら不要（WARNINGは出るが致命的ではない）
+
+bot = Bot(command_prefix="!", intents=intents)
+
+
+@bot.event
+async def on_ready():
+    log.info("✅ on_ready: %s", bot.user)
+
+
+async def runner():
+    """
+    ここがポイント：
+    - 例外で落ちても、原因をログに出して少し待って再接続する
+    - Renderの「即再起動ループ」よりデバッグしやすい
+    """
+    while True:
+        try:
+            log.info("🔌 bot starting...")
+            await bot.start(TOKEN, reconnect=True)
+        except Exception as e:
+            log.error("💥 bot crashed: %s", e)
+            traceback.print_exc()
             try:
-                remaining = (r["start_at"] - now).total_seconds()
-                if not (REMIND_SEC - ALLOW_RANGE <= remaining <= REMIND_SEC + ALLOW_RANGE):
-                    continue
-
-                ch_id = int(r["notify_channel"])
-                user_id = int(r["user_id"])
-
-                ch = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
-                await ch.send(f"<@{user_id}> あと3分であなたの番です！")
-
-                async with bot.pool.acquire() as conn:
-                    await conn.execute("UPDATE slots SET notified=true WHERE id=$1", r["id"])
-
-            except (discord.Forbidden, discord.NotFound) as e:
-                print("⚠ notify channel error:", e)
+                # DBプールを閉じる（存在する場合）
+                if hasattr(bot, "pool") and bot.pool is not None:
+                    await bot.pool.close()
+                    log.info("✅ DB pool closed")
             except Exception:
-                print("❌ per-row error")
                 traceback.print_exc()
 
-    except Exception:
-        print("❌ remind_loop crashed (outer)")
-        traceback.print_exc()
+            log.info("⏳ restarting in 10 seconds...")
+            await asyncio.sleep(10)
+        else:
+            # bot.start が普通に返るのは stop/close されたとき
+            log.warning("bot.start returned; restarting in 10 seconds...")
+            await asyncio.sleep(10)
 
-@remind_loop.error
-async def remind_loop_error(exc):
-    print("❌ remind_loop stopped by error:", exc)
-    traceback.print_exc()
 
-def start_remind(bot):
-    if not remind_loop.is_running():
-        remind_loop.start(bot)
-        print("✅ remind_loop started")
+if __name__ == "__main__":
+    asyncio.run(runner())
