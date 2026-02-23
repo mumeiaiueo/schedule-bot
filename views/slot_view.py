@@ -7,26 +7,89 @@ SLOTS_PER_PAGE = 25
 JST = timezone(timedelta(hours=9))
 
 
+# =========================
+# パネル表示（タイトル＋次の人対応版）
+# =========================
 def build_panel_text(g):
-    lines = ["📅 予約枠"]
     breaks = set(g.get("breaks", []))
+    reservations = g.get("reservations", {})
+    slots = g.get("slots", [])
+    meta = g.get("meta", {})
+    title = g.get("title") or "予約枠"
 
-    for s in g["slots"]:
+    base_date_str = meta.get("base_date")
+    cross_midnight = meta.get("cross_midnight", False)
+    start_min = meta.get("start_min")
+
+    now = datetime.now(JST)
+
+    # --- 日付復元 ---
+    base_date = None
+    if base_date_str:
+        try:
+            y, m, d = map(int, base_date_str.split("-"))
+            base_date = datetime(y, m, d, tzinfo=JST).date()
+        except:
+            pass
+
+    def slot_to_dt(slot_str):
+        if base_date is None:
+            return None
+        h, m = map(int, slot_str.split(":"))
+        day = base_date
+        if cross_midnight and start_min is not None:
+            if (h * 60 + m) < int(start_min):
+                day = base_date + timedelta(days=1)
+        return datetime(day.year, day.month, day.day, h, m, tzinfo=JST)
+
+    # --- 次の人判定 ---
+    next_info = None
+    for s in slots:
+        if s in breaks:
+            continue
+        uid = reservations.get(s)
+        if not uid:
+            continue
+        dt = slot_to_dt(s)
+        if dt and dt >= now:
+            next_info = (s, uid)
+            break
+
+    # --- 表示構築 ---
+    lines = []
+    lines.append("━━━━━━━━━━━━━━━━")
+    lines.append(f"🎨 **【 {title} 】**")
+    if base_date_str:
+        lines.append(f"📅 {base_date_str}")
+    lines.append("━━━━━━━━━━━━━━━━")
+
+    if next_info:
+        s, uid = next_info
+        lines.append(f"⏳ 次の人：**{s}** <@{uid}>")
+    else:
+        lines.append("⏳ 次の人：なし")
+
+    lines.append("━━━━━━━━━━━━━━━━")
+
+    for s in slots:
         if s in breaks:
             lines.append(f"⚪ {s} 休憩")
-        elif s in g["reservations"]:
-            uid = g["reservations"][s]
+        elif s in reservations:
+            uid = reservations[s]
             lines.append(f"🔴 {s} <@{uid}>")
         else:
             lines.append(f"🟢 {s}")
+
     return "\n".join(lines)
 
 
+# =========================
+# 予約ボタン
+# =========================
 class SlotButton(discord.ui.Button):
     def __init__(self, slot: str, reserved_user_id: int | None, is_break: bool):
         self.slot = slot
 
-        # 休憩枠 → グレー & 押せない
         if is_break:
             super().__init__(
                 label=f"⚪ {slot}",
@@ -35,13 +98,11 @@ class SlotButton(discord.ui.Button):
             )
             return
 
-        # 予約済 → 赤
         if reserved_user_id:
             super().__init__(
                 label=f"🔴 {slot}",
                 style=discord.ButtonStyle.danger
             )
-        # 空き → 緑
         else:
             super().__init__(
                 label=f"🟢 {slot}",
@@ -107,124 +168,9 @@ class SlotButton(discord.ui.Button):
         await interaction.message.edit(content=build_panel_text(g), view=view)
 
 
-class BreakSelect(discord.ui.Select):
-    def __init__(self, guild_id: int, page_slots: list[str], breaks: set[str]):
-        options = []
-        for s in page_slots:
-            label = f"{s}（休憩ON）" if s in breaks else f"{s}（休憩OFF）"
-            options.append(discord.SelectOption(label=label, value=s))
-
-        super().__init__(
-            placeholder="休憩にする/戻す枠を選択",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
-        self.guild_id = guild_id
-
-    async def callback(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 管理者のみ操作できます", ephemeral=True)
-            return
-
-        data = load_data()
-        g = get_guild(data, self.guild_id)
-
-        slot = self.values[0]
-        breaks = set(g.get("breaks", []))
-        new_break = slot not in breaks
-
-        async with interaction.client.pool.acquire() as conn:
-            if new_break:
-                await conn.execute(
-                    """
-                    UPDATE slots
-                    SET is_break = true, user_id = NULL, notified = false
-                    WHERE guild_id = $1 AND slot_time = $2
-                    """,
-                    self.guild_id, slot
-                )
-            else:
-                await conn.execute(
-                    """
-                    UPDATE slots
-                    SET is_break = false, notified = false
-                    WHERE guild_id = $1 AND slot_time = $2
-                    """,
-                    self.guild_id, slot
-                )
-
-        # JSONも同期
-        if new_break:
-            breaks.add(slot)
-            if slot in g["reservations"]:
-                del g["reservations"][slot]
-        else:
-            breaks.discard(slot)
-
-        g["breaks"] = sorted(list(breaks))
-        save_data(data)
-
-        # ✅ まず操作結果を返す（ephemeral）
-        await interaction.response.send_message(
-            f"✅ {slot} を {'休憩ON' if new_break else '休憩OFF'} にしました",
-            ephemeral=True
-        )
-
-        # ✅ ここが追加：パネル（元メッセージ）を即更新する
-        panel = g.get("panel", {})
-        ch_id = panel.get("channel_id")
-        msg_id = panel.get("message_id")
-
-        if ch_id and msg_id:
-            try:
-                channel = interaction.client.get_channel(ch_id)
-                if channel is None:
-                    channel = await interaction.client.fetch_channel(ch_id)
-
-                message = await channel.fetch_message(msg_id)
-
-                # 「今見ているページ」を保持したいので、管理ボタンのあるパネルメッセージの view からページを読む
-                current_page = 0
-                try:
-                    if getattr(message, "components", None):
-                        pass
-                except Exception:
-                    pass
-
-                new_view = SlotView(self.guild_id, page=current_page)
-                await message.edit(content=build_panel_text(g), view=new_view)
-            except Exception:
-                # 更新失敗しても切替自体は成功してるので落とさない
-                import traceback
-                print("⚠ panel update failed")
-                traceback.print_exc()
-
-
-class AdminBreakButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="🛠 休憩切替（管理者）", style=discord.ButtonStyle.secondary)
-
-    async def callback(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 管理者のみ操作できます", ephemeral=True)
-            return
-
-        data = load_data()
-        g = get_guild(data, interaction.guild.id)
-
-        page = self.view.page
-        start = page * SLOTS_PER_PAGE
-        end = start + SLOTS_PER_PAGE
-        page_slots = g["slots"][start:end]
-
-        breaks = set(g.get("breaks", []))
-
-        v = discord.ui.View(timeout=60)
-        v.add_item(BreakSelect(interaction.guild.id, page_slots, breaks))
-        await interaction.response.send_message("休憩を切り替える枠を選んでください：", view=v, ephemeral=True)
-
-
+# =========================
+# ページボタン
+# =========================
 class PageButton(discord.ui.Button):
     def __init__(self, direction: str):
         label = "⬅ 戻る" if direction == "prev" else "次へ ➡"
@@ -244,6 +190,9 @@ class PageButton(discord.ui.Button):
         )
 
 
+# =========================
+# View本体
+# =========================
 class SlotView(discord.ui.View):
     def __init__(self, guild_id: int, page: int = 0):
         super().__init__(timeout=None)
@@ -262,8 +211,6 @@ class SlotView(discord.ui.View):
         for s in page_slots:
             reserved = g["reservations"].get(s)
             self.add_item(SlotButton(s, reserved, is_break=(s in breaks)))
-
-        self.add_item(AdminBreakButton())
 
         if page > 0:
             self.add_item(PageButton("prev"))
