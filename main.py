@@ -15,6 +15,11 @@ log = logging.getLogger("schedule-bot")
 TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+from urllib.parse import urlparse
+
+p = urlparse(DATABASE_URL)
+log.info("DB host=%s port=%s user=%s db=%s sslmode=%s",
+         p.hostname, p.port, p.username, (p.path or "").lstrip("/"), "require")
 
 class Bot(commands.Bot):
     async def setup_hook(self):
