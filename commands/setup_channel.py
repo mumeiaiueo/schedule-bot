@@ -93,27 +93,35 @@ def setup(bot: discord.Client):
                     str(notify_channel.id)
                 )
 
-                # 枠をDBへ保存
-                for t in slots:
-                    h, m = map(int, t.split(":"))
-                    day_date = base_date
-                    if cross_midnight and (h * 60 + m) < start_min:
-                        day_date += timedelta(days=1)
+# 枠をDBへ保存
+for t in slots:
+    h, m = map(int, t.split(":"))
+    day_date = base_date
 
-                    start_at = datetime(
-    day_date.year,
-    day_date.month,
-    day_date.day,
-    h,
-    m,
-    tzinfo=JST
-)
-                    start_at_utc = start_at_jst.astimezone(timezone.utc)
+    if cross_midnight and (h * 60 + m) < start_min:
+        day_date += timedelta(days=1)
 
-                       day_date.year, day_date.month, day_date.day, h, m, tzinfo=JST
-                    )
-                    start_at_utc = start_at_jst.astimezone(timezone.
+    start_at_jst = datetime(
+        day_date.year,
+        day_date.month,
+        day_date.day,
+        h,
+        m,
+        tzinfo=JST
+    )
+    start_at_utc = start_at_jst.astimezone(timezone.utc)
 
+    await conn.execute(
+        """
+        INSERT INTO slots
+        (guild_id, channel_id, slot_time, start_at, user_id, notified, is_break)
+        VALUES ($1, $2, $3, $4, NULL, false, false)
+        """,
+        guild_id,
+        channel_id,
+        t,
+        start_at_utc
+    )
             # JSON保存（表示用）
             data = load_data()
             c = get_channel(data, channel_id)  # ✅ keyもstrになる
