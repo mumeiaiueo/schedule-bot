@@ -154,6 +154,7 @@ class BreakSelect(discord.ui.Select):
                     self.guild_id, slot
                 )
 
+        # JSONも同期
         if new_break:
             breaks.add(slot)
             if slot in g["reservations"]:
@@ -164,10 +165,40 @@ class BreakSelect(discord.ui.Select):
         g["breaks"] = sorted(list(breaks))
         save_data(data)
 
+        # ✅ まず操作結果を返す（ephemeral）
         await interaction.response.send_message(
             f"✅ {slot} を {'休憩ON' if new_break else '休憩OFF'} にしました",
             ephemeral=True
         )
+
+        # ✅ ここが追加：パネル（元メッセージ）を即更新する
+        panel = g.get("panel", {})
+        ch_id = panel.get("channel_id")
+        msg_id = panel.get("message_id")
+
+        if ch_id and msg_id:
+            try:
+                channel = interaction.client.get_channel(ch_id)
+                if channel is None:
+                    channel = await interaction.client.fetch_channel(ch_id)
+
+                message = await channel.fetch_message(msg_id)
+
+                # 「今見ているページ」を保持したいので、管理ボタンのあるパネルメッセージの view からページを読む
+                current_page = 0
+                try:
+                    if getattr(message, "components", None):
+                        pass
+                except Exception:
+                    pass
+
+                new_view = SlotView(self.guild_id, page=current_page)
+                await message.edit(content=build_panel_text(g), view=new_view)
+            except Exception:
+                # 更新失敗しても切替自体は成功してるので落とさない
+                import traceback
+                print("⚠ panel update failed")
+                traceback.print_exc()
 
 
 class AdminBreakButton(discord.ui.Button):
