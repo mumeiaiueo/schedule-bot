@@ -11,14 +11,13 @@ JST = timezone(timedelta(hours=9))
 
 def setup(bot: discord.Client):
 
-    @bot.tree.command(name="setup2", description="枠作成 + 通知設定（管理者のみ）")
-    @app_commands.checks.has_permissions(administrator=True)
+    @bot.tree.command(name="setup2", description="枠作成 + 通知設定")
     @app_commands.describe(
-        title="タイトル（任意）",
-        day="今日 or 明日",
+        title="タイトル（例：夜の部屋）",
         start="開始 例 19:00",
         end="終了 例 21:00",
-        notify_channel="3分前通知チャンネル",
+        notify_channel="通知チャンネル",
+        day="今日 or 明日",
     )
     @app_commands.choices(
         interval=[
@@ -29,16 +28,16 @@ def setup(bot: discord.Client):
         day=[
             app_commands.Choice(name="今日", value="today"),
             app_commands.Choice(name="明日", value="tomorrow"),
-        ]
+        ],
     )
     async def setup_cmd(
         interaction: discord.Interaction,
-        day: app_commands.Choice[str],
+        title: str,
         start: str,
         end: str,
         interval: app_commands.Choice[int],
         notify_channel: discord.TextChannel,
-        title: str = "",
+        day: app_commands.Choice[str],
     ):
         await interaction.response.defer(thinking=True)
 
@@ -48,35 +47,25 @@ def setup(bot: discord.Client):
                 await interaction.followup.send("❌ 枠が作れません", ephemeral=True)
                 return
 
-            guild_id_int = interaction.guild.id
+            guild_id = interaction.guild.id
 
-            # 🔥 今日 or 明日
-            base_date = datetime.now(JST).date()
+            # 今日 / 明日 判定
+            today = datetime.now(JST).date()
             if day.value == "tomorrow":
-                base_date += timedelta(days=1)
+                base_date = today + timedelta(days=1)
+            else:
+                base_date = today
 
-            # 日跨ぎ判定
             start_h, start_m = map(int, start.split(":"))
             end_h, end_m = map(int, end.split(":"))
+
             start_min = start_h * 60 + start_m
             end_min = end_h * 60 + end_m
             cross_midnight = end_min <= start_min
 
             async with bot.pool.acquire() as conn:
 
-                # 上書き防止
-                existing = await conn.fetchval(
-                    "SELECT COUNT(*) FROM slots WHERE guild_id = $1",
-                    guild_id_int
-                )
-                if existing > 0:
-                    await interaction.followup.send(
-                        "⚠️ 既に枠があります。\n/reset を実行してください。",
-                        ephemeral=True
-                    )
-                    return
-
-                # 通知保存
+                # 通知チャンネル保存
                 await conn.execute(
                     """
                     INSERT INTO guild_settings (guild_id, notify_channel)
@@ -84,8 +73,14 @@ def setup(bot: discord.Client):
                     ON CONFLICT (guild_id)
                     DO UPDATE SET notify_channel = EXCLUDED.notify_channel
                     """,
-                    str(guild_id_int),
+                    str(guild_id),
                     str(notify_channel.id)
+                )
+
+                # 既存削除
+                await conn.execute(
+                    "DELETE FROM slots WHERE guild_id = $1",
+                    guild_id
                 )
 
                 # 枠作成
@@ -97,25 +92,29 @@ def setup(bot: discord.Client):
                         day_date = base_date + timedelta(days=1)
 
                     start_at_jst = datetime(
-                        day_date.year, day_date.month, day_date.day, h, m, tzinfo=JST
+                        day_date.year,
+                        day_date.month,
+                        day_date.day,
+                        h,
+                        m,
+                        tzinfo=JST
                     )
-                    start_at_utc = start_at_jst.astimezone(timezone.utc)
 
                     await conn.execute(
                         """
-                        INSERT INTO slots (guild_id, slot_time, start_at, user_id, notified, is_break)
-                        VALUES ($1, $2, $3, NULL, false, false)
+                        INSERT INTO slots (guild_id, slot_time, start_at, user_id, notified)
+                        VALUES ($1, $2, $3, NULL, false)
                         """,
-                        guild_id_int,
+                        guild_id,
                         t,
-                        start_at_utc
+                        start_at_jst.astimezone(timezone.utc)
                     )
 
-            # JSON更新
+            # JSON保存
             data = load_data()
-            g = get_guild(data, guild_id_int)
+            g = get_guild(data, guild_id)
 
-            g["title"] = title.strip()
+            g["title"] = title
             g["slots"] = slots
             g["reservations"] = {}
             g["breaks"] = []
@@ -124,20 +123,23 @@ def setup(bot: discord.Client):
                 "cross_midnight": cross_midnight,
                 "base_date": str(base_date),
             }
+
             save_data(data)
 
-            view = SlotView(guild_id=guild_id_int, page=0)
+            view = SlotView(guild_id, page=0)
             msg = await interaction.followup.send(
                 content=build_panel_text(g),
                 view=view
             )
 
-            g["panel"]["channel_id"] = msg.channel.id
-            g["panel"]["message_id"] = msg.id
+            g["panel"] = {
+                "channel_id": msg.channel.id,
+                "message_id": msg.id,
+            }
             save_data(data)
 
             await interaction.followup.send(
-                f"✅ セットアップ完了（{day.name}）",
+                "✅ セットアップ完了",
                 ephemeral=True
             )
 
