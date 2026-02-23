@@ -8,23 +8,19 @@ from discord.ext import commands
 
 from utils.db import init_db_pool
 
-# ===== ログ（落ちた理由を必ず出す）=====
+# ===== ログ =====
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("schedule-bot")
 
-TOKEN = os.getenv("TOKEN")  # RenderのEnvironmentで TOKEN
-DATABASE_URL = os.getenv("DATABASE_URL")  # RenderのEnvironmentで DATABASE_URL
+TOKEN = os.getenv("TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 class Bot(commands.Bot):
-    def sid(self, x) -> str:
-        """DiscordのID(int)をDB用の文字列に統一"""
-        return str(x) if x is not None else None
 
     async def setup_hook(self):
         log.info("🚀 setup_hook start")
 
-        # 環境変数チェック（値は出さない）
         if not TOKEN:
             raise RuntimeError("TOKEN が環境変数にありません")
         if not DATABASE_URL:
@@ -34,32 +30,34 @@ class Bot(commands.Bot):
         self.pool = await init_db_pool(DATABASE_URL)
         log.info("✅ DB ready")
 
-        # コマンド登録
-        from commands.create import setup as create_setup
-        create_setup(self)
-
+        # =============================
+        # 新設計コマンド登録
+        # =============================
         try:
-            from commands.settings import setup as settings_setup
-            settings_setup(self)
-        except Exception as e:
-            log.warning("⚠ settings.py not loaded: %s", e)
-
-        try:
-            from commands.debug import setup as debug_setup
-            debug_setup(self)
-        except Exception as e:
-            log.warning("⚠ debug.py not loaded: %s", e)
-
-        # remind 起動（落ちてもbot全体は落とさない）
-        try:
-            from commands.remind import start_remind
-            start_remind(self)
-            log.info("✅ remind started")
-        except Exception as e:
-            log.error("⚠ remind 起動失敗: %s", e)
+            from commands.setup_channel import setup as setup_channel_setup
+            setup_channel_setup(self)
+            log.info("✅ setup_channel loaded")
+        except Exception:
             traceback.print_exc()
 
-        # コマンド同期（ここで落ちることもあるのでログ）
+        try:
+            from commands.reset_channel import setup as reset_channel_setup
+            reset_channel_setup(self)
+            log.info("✅ reset_channel loaded")
+        except Exception:
+            traceback.print_exc()
+
+        # =============================
+        # チャンネル専用remind起動
+        # =============================
+        try:
+            from commands.remind_channel import start_remind_channel
+            start_remind_channel(self)
+            log.info("✅ remind_channel started")
+        except Exception:
+            traceback.print_exc()
+
+        # コマンド同期
         await self.tree.sync()
         log.info("✅ commands synced")
 
@@ -67,7 +65,7 @@ class Bot(commands.Bot):
 
 
 intents = discord.Intents.default()
-intents.message_content = False  # スラッシュ運用なら不要（WARNINGは出るが致命的ではない）
+intents.message_content = False
 
 bot = Bot(command_prefix="!", intents=intents)
 
@@ -78,11 +76,6 @@ async def on_ready():
 
 
 async def runner():
-    """
-    ここがポイント：
-    - 例外で落ちても、原因をログに出して少し待って再接続する
-    - Renderの「即再起動ループ」よりデバッグしやすい
-    """
     while True:
         try:
             log.info("🔌 bot starting...")
@@ -90,8 +83,8 @@ async def runner():
         except Exception as e:
             log.error("💥 bot crashed: %s", e)
             traceback.print_exc()
+
             try:
-                # DBプールを閉じる（存在する場合）
                 if hasattr(bot, "pool") and bot.pool is not None:
                     await bot.pool.close()
                     log.info("✅ DB pool closed")
@@ -101,7 +94,6 @@ async def runner():
             log.info("⏳ restarting in 10 seconds...")
             await asyncio.sleep(10)
         else:
-            # bot.start が普通に返るのは stop/close されたとき
             log.warning("bot.start returned; restarting in 10 seconds...")
             await asyncio.sleep(10)
 
