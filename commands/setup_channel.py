@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 from utils.time_utils import generate_slots
 from utils.data_manager import load_data, save_data, get_channel
+
+# ※ あなたの views/slot_view.py に合わせる
 from views.slot_view import SlotView, build_panel_text
 
 JST = timezone(timedelta(hours=9))
@@ -47,19 +49,22 @@ def setup(bot: discord.Client):
         await interaction.response.defer(thinking=True)
 
         try:
-            # ✅ DB(text)想定：全部 str に統一
-            channel_id = str(interaction.channel.id)
-            guild_id = str(interaction.guild.id)
+            # ✅ DBは int8 想定（Supabaseのスクショ的に channel_id/guild_id は int）
+            channel_id = interaction.channel.id
+            guild_id = interaction.guild.id
 
+            # 枠生成
             slots = generate_slots(start, end, interval.value)
             if not slots:
                 await interaction.followup.send("❌ 枠が作れません", ephemeral=True)
                 return
 
+            # 今日/明日
             base_date = datetime.now(JST).date()
             if day.value == "tomorrow":
                 base_date += timedelta(days=1)
 
+            # 日跨ぎ判定
             start_h, start_m = map(int, start.split(":"))
             end_h, end_m = map(int, end.split(":"))
             start_min = start_h * 60 + start_m
@@ -67,8 +72,7 @@ def setup(bot: discord.Client):
             cross_midnight = end_min <= start_min
 
             async with bot.pool.acquire() as conn:
-
-                # チャンネル単位で既存チェック
+                # 既存チェック（チャンネル単位）
                 exists = await conn.fetchval(
                     "SELECT COUNT(*) FROM slots WHERE channel_id = $1",
                     channel_id
@@ -86,46 +90,44 @@ def setup(bot: discord.Client):
                     INSERT INTO guild_settings (channel_id, guild_id, notify_channel)
                     VALUES ($1, $2, $3)
                     ON CONFLICT (channel_id)
-                    DO UPDATE SET notify_channel = EXCLUDED.notify_channel
+                    DO UPDATE SET guild_id = EXCLUDED.guild_id,
+                                  notify_channel = EXCLUDED.notify_channel
                     """,
                     channel_id,
-                    guild_id,
-                    str(notify_channel.id)
+                    str(guild_id),              # guild_settings.guild_id が text の場合に合わせる
+                    str(notify_channel.id)      # notify_channel が text の場合に合わせる
                 )
 
-# 枠をDBへ保存
-# 枠をDBへ保存
-for t in slots:
-    h, m = map(int, t.split(":"))
-    day_date = base_date
+                # ✅ 枠をDBへ保存（ここがインデント崩れてた）
+                for t in slots:
+                    h, m = map(int, t.split(":"))
+                    day_date = base_date
 
-    if cross_midnight and (h * 60 + m) < start_min:
-        day_date += timedelta(days=1)
+                    if cross_midnight and (h * 60 + m) < start_min:
+                        day_date += timedelta(days=1)
 
-    start_at_jst = datetime(
-        day_date.year,
-        day_date.month,
-        day_date.day,
-        h,
-        m,
-        tzinfo=JST
-    )
-    start_at_utc = start_at_jst.astimezone(timezone.utc)
+                    start_at_jst = datetime(
+                        day_date.year, day_date.month, day_date.day,
+                        h, m,
+                        tzinfo=JST
+                    )
+                    start_at_utc = start_at_jst.astimezone(timezone.utc)
 
-    await conn.execute(
-        """
-        INSERT INTO slots
-        (guild_id, channel_id, slot_time, start_at, user_id, notified, is_break)
-        VALUES ($1, $2, $3, $4, NULL, false, false)
-        """,
-        guild_id,
-        channel_id,
-        t,
-        start_at_utc
-    )
-            # JSON保存（表示用）
+                    await conn.execute(
+                        """
+                        INSERT INTO slots
+                        (guild_id, channel_id, slot_time, start_at, user_id, notified, is_break)
+                        VALUES ($1, $2, $3, $4, NULL, false, false)
+                        """,
+                        guild_id,       # slots.guild_id が int8 の場合に合わせる
+                        channel_id,     # slots.channel_id が int8 の場合に合わせる
+                        t,
+                        start_at_utc
+                    )
+
+            # JSON保存（表示用）※ JSONのキーは文字列にしておくと安定
             data = load_data()
-            c = get_channel(data, channel_id)  # ✅ keyもstrになる
+            c = get_channel(data, str(channel_id))
 
             c["title"] = title.strip()
             c["slots"] = slots
@@ -136,16 +138,16 @@ for t in slots:
                 "cross_midnight": cross_midnight,
                 "base_date": str(base_date)
             }
+            c.setdefault("panel", {})
             save_data(data)
 
             # パネル表示
-            view = SlotViewChannel(channel_id=channel_id, page=0)
+            view = SlotView(channel_id=str(channel_id), page=0)
             msg = await interaction.followup.send(
-                content=build_panel_text_channel(c),
+                content=build_panel_text(c),
                 view=view
             )
 
-            c.setdefault("panel", {})
             c["panel"]["channel_id"] = str(msg.channel.id)
             c["panel"]["message_id"] = str(msg.id)
             save_data(data)
