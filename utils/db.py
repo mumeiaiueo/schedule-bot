@@ -1,29 +1,18 @@
 import asyncpg
 
-async def init_db_pool(DATABASE_URL: str):
-    pool = await asyncpg.create_pool(DATABASE_URL)
+async def init_db_pool(dsn: str):
+    # Supabase / pooler 対策：
+    # - SSL必須
+    # - prepared statementキャッシュを無効化（pgbouncer系で事故りやすい）
+    pool = await asyncpg.create_pool(
+        dsn=dsn,
+        ssl="require",
+        statement_cache_size=0,
+        max_size=5,
+        min_size=1,
+        command_timeout=30,
+    )
 
-    async with pool.acquire() as conn:
-        # guild_settings
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS guild_settings (
-            guild_id TEXT PRIMARY KEY,
-            notify_channel TEXT
-        );
-        """)
-
-        # slots（既存テーブルがあってもOK：ALTERで不足カラムを足す）
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS slots (
-            id BIGSERIAL PRIMARY KEY
-        );
-        """)
-
-        # ✅ 無ければ追加（ここが重要）
-        await conn.execute("ALTER TABLE slots ADD COLUMN IF NOT EXISTS guild_id BIGINT;")
-        await conn.execute("ALTER TABLE slots ADD COLUMN IF NOT EXISTS start_at TIMESTAMPTZ;")
-        await conn.execute("ALTER TABLE slots ADD COLUMN IF NOT EXISTS user_id TEXT;")
-        await conn.execute("ALTER TABLE slots ADD COLUMN IF NOT EXISTS notified BOOLEAN DEFAULT false;")
-
-    print("✅ DB tables ensured")
+    # ここでテーブル作成などをしているなら、その処理も残してOK
+    # （あなたの既存db.pyに "ensure tables" がある場合は下に続けて書いてOK）
     return pool
