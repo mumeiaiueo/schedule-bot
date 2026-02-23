@@ -1,3 +1,4 @@
+# main.py
 import os
 import asyncio
 import logging
@@ -15,17 +16,6 @@ TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
-def safe_setup(name: str, fn):
-    try:
-        fn()
-        log.info("✅ loaded: %s", name)
-        return True
-    except Exception as e:
-        log.error("❌ load failed: %s (%s: %s)", name, type(e).__name__, e)
-        traceback.print_exc()
-        return False
-
-
 class Bot(commands.Bot):
     async def setup_hook(self):
         log.info("🚀 setup_hook start")
@@ -39,18 +29,18 @@ class Bot(commands.Bot):
         self.pool = await init_db_pool(DATABASE_URL)
         log.info("✅ DB ready")
 
-        # コマンド読み込み（失敗してもBotは落とさない）
-        def load_commands():
-            from commands.setup_channel import setup as setup_channel_setup
-            setup_channel_setup(self)
+        # コマンド読み込み（落ちても bot 自体は起動させる）
+        def safe_load(name: str, fn):
+            try:
+                fn()
+                log.info(f"✅ loaded: {name}")
+            except Exception:
+                log.error(f"💥 load failed: {name}")
+                traceback.print_exc()
 
-            from commands.reset_channel import setup as reset_channel_setup
-            reset_channel_setup(self)
-
-            from commands.remind_channel import start_remind_channel
-            start_remind_channel(self)
-
-        safe_setup("commands", load_commands)
+        safe_load("setup_channel", lambda: __import__("commands.setup_channel", fromlist=["setup"]).setup(self))
+        safe_load("reset_channel", lambda: __import__("commands.reset_channel", fromlist=["setup"]).setup(self))
+        safe_load("remind_channel", lambda: __import__("commands.remind_channel", fromlist=["start_remind_channel"]).start_remind_channel(self))
 
         await self.tree.sync()
         log.info("✅ commands synced")
@@ -68,11 +58,12 @@ async def on_ready():
 
 
 async def runner():
-    backoff = 60
+    backoff = 30
     while True:
         try:
             log.info("🔌 bot starting...")
             await bot.start(TOKEN, reconnect=True)
+
             log.warning("bot.start returned; restarting later...")
             await asyncio.sleep(backoff)
 
@@ -90,8 +81,9 @@ async def runner():
             log.info("⏳ restarting in %s seconds...", backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 600)
+
         else:
-            backoff = 60
+            backoff = 30
 
 
 if __name__ == "__main__":
