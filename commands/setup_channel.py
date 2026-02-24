@@ -1,7 +1,7 @@
-# commands/setup_channel.py
 import discord
 from discord import app_commands
-from datetime import datetime
+from datetime import datetime, timedelta
+import re
 
 from utils.time_utils import jst_now
 from utils.discord_utils import safe_send, safe_defer
@@ -12,65 +12,76 @@ def _is_admin(interaction: discord.Interaction) -> bool:
     return isinstance(m, discord.Member) and m.guild_permissions.administrator
 
 
-HOUR_CHOICES = [app_commands.Choice(name=f"{h:02d}", value=h) for h in range(24)]
-MIN_CHOICES = [app_commands.Choice(name=f"{m:02d}", value=m) for m in (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55)]
 INTERVAL_CHOICES = [
     app_commands.Choice(name="20分", value=20),
     app_commands.Choice(name="25分", value=25),
     app_commands.Choice(name="30分", value=30),
 ]
 
+DAY_CHOICES = [
+    app_commands.Choice(name="今日", value="today"),
+    app_commands.Choice(name="明日", value="tomorrow"),
+]
+
+
+def parse_hm(text: str):
+    m = re.match(r"^(\d{1,2}):(\d{2})$", text.strip())
+    if not m:
+        raise ValueError("時刻は HH:MM 形式で入力してね（例 19:00）")
+    hh = int(m.group(1))
+    mm = int(m.group(2))
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        raise ValueError("時刻が不正です（00:00〜23:59）")
+    return hh, mm
+
 
 def register(tree: app_commands.CommandTree, dm):
-    @tree.command(name="setup_channel", description="このチャンネルに予約パネルを作成します（重なり禁止）")
+    @tree.command(name="setup_channel", description="このチャンネルに予約パネルを作成（今日/明日）")
     @app_commands.describe(
-        title="募集のタイトル（任意）",
-        start_hour="開始（時）",
-        start_min="開始（分）",
-        end_hour="終了（時）",
-        end_min="終了（分）",
-        interval="枠の間隔（分）",
-        notify_channel="通知を送るチャンネル（3分前通知）※今は一旦ダミーでもOK",
-        ping_everyone="募集開始時に @everyone を付ける？（管理者用）",
+        day="今日 or 明日",
+        title="募集タイトル（任意）",
+        start="開始時刻（例 19:00）",
+        end="終了時刻（例 21:00）",
+        interval="枠の間隔（20/25/30）",
+        notify_channel="通知チャンネル（3分前通知）",
+        ping_everyone="募集時に @everyone する？",
     )
-    @app_commands.choices(
-        start_hour=HOUR_CHOICES,
-        start_min=MIN_CHOICES,
-        end_hour=HOUR_CHOICES,
-        end_min=MIN_CHOICES,
-        interval=INTERVAL_CHOICES,
-    )
+    @app_commands.choices(day=DAY_CHOICES, interval=INTERVAL_CHOICES)
     async def setup_channel(
         interaction: discord.Interaction,
+        day: str,
         title: str | None,
-        start_hour: int,
-        start_min: int,
-        end_hour: int,
-        end_min: int,
+        start: str,
+        end: str,
         interval: int,
         notify_channel: discord.TextChannel,
-        ping_everyone: bool = False,  # ★追加：True/Falseで選べる
+        ping_everyone: bool = False,
     ):
         if not _is_admin(interaction):
             await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
-            return
-
-        if notify_channel is None:
-            await safe_send(interaction, "❌ notify_channel を選んでね", ephemeral=True)
             return
 
         await safe_defer(interaction, ephemeral=True, thinking=True)
 
         try:
             now = jst_now()
-            day_date = now.date()
 
-            start_at = datetime(now.year, now.month, now.day, start_hour, start_min, tzinfo=now.tzinfo)
-            end_at   = datetime(now.year, now.month, now.day, end_hour, end_min, tzinfo=now.tzinfo)
+            base_date = now.date()
+            if day == "tomorrow":
+                base_date = base_date + timedelta(days=1)
 
+            sh, sm = parse_hm(start)
+            eh, em = parse_hm(end)
+
+            start_at = datetime(base_date.year, base_date.month, base_date.day, sh, sm, tzinfo=now.tzinfo)
+            end_at   = datetime(base_date.year, base_date.month, base_date.day, eh, em, tzinfo=now.tzinfo)
+
+            # 🌙 日跨ぎ対応（同日入力で end <= start のときは翌日に）
             if end_at <= start_at:
-                await safe_send(interaction, "❌ 終了は開始より後にしてね", ephemeral=True)
-                return
+                end_at = end_at + timedelta(days=1)
+
+            # panels.day は「開始日の date」を入れる（今日/明日選択に一致）
+            day_date = base_date
 
             res = await dm.create_panel(
                 guild_id=str(interaction.guild_id),
@@ -91,26 +102,19 @@ def register(tree: app_commands.CommandTree, dm):
             panel_id = res["panel_id"]
             await dm.render_panel(interaction.client, panel_id)
 
-            # ★募集開始時の @everyone（別メッセージで送る方式）
+            # 📢 募集時 @everyone（選択式）
             if ping_everyone:
                 ch = interaction.channel
-                if isinstance(ch, discord.TextChannel):
-                    me = ch.guild.me
-                    can = bool(me and ch.permissions_for(me).mention_everyone)
-                    if can:
-                        await ch.send(
-                            "@everyone 募集パネルを作成しました！下のボタンから予約できます。",
-                            allowed_mentions=discord.AllowedMentions(everyone=True)
-                        )
-                    else:
-                        # 権限が無いなら管理者にだけ警告（メンションはしない）
-                        await safe_send(
-                            interaction,
-                            "⚠️ @everyone を付けたいけど、Botに **Mention Everyone** 権限がありません（Discordの招待権限 or チャンネル権限で付与してね）",
-                            ephemeral=True,
-                        )
+                me = ch.guild.me if isinstance(ch, discord.TextChannel) else None
+                if me and ch.permissions_for(me).mention_everyone:
+                    await ch.send(
+                        "@everyone 📢 募集を開始しました！下のパネルから予約できます。",
+                        allowed_mentions=discord.AllowedMentions(everyone=True),
+                    )
+                else:
+                    await safe_send(interaction, "⚠️ Botに Mention Everyone 権限がありません", ephemeral=True)
 
-            await safe_send(interaction, "✅ パネルを作成しました（ボタンで予約 / もう一度押すとキャンセル）", ephemeral=True)
+            await safe_send(interaction, "✅ パネル作成完了", ephemeral=True)
 
         except Exception as e:
             await safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
