@@ -108,7 +108,7 @@ def register(tree: app_commands.CommandTree, dm):
                 me = ch.guild.me if isinstance(ch, discord.TextChannel) else None
                 if me and ch.permissions_for(me).mention_everyone:
                     await ch.send(
-                        "@everyone 📢 募集を開始しました！下のパネルから予約できます。",
+                        "@everyone お疲れ様です！お部屋貼れる方いらっしゃいましたらお願い致します🙇",
                         allowed_mentions=discord.AllowedMentions(everyone=True),
                     )
                 else:
