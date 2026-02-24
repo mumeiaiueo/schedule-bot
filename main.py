@@ -1,4 +1,4 @@
-print("🔥 BOOT MARKER v2026-02-24-stable-reminder FULL 🔥")
+print("🔥 BOOT MARKER v2026-02-24-stable-reminder FULL v2 🔥")
 
 import asyncio
 import os
@@ -56,7 +56,6 @@ class MyClient(discord.Client):
         register_notify(self.tree, self.dm)
 
     async def on_ready(self):
-        # sync は起動後1回だけ（429対策）
         if not self._synced:
             try:
                 await self.tree.sync()
@@ -73,114 +72,85 @@ class MyClient(discord.Client):
 
     async def on_interaction(self, interaction: discord.Interaction):
         """
-        custom_id 方式のボタン/セレクトを最優先で処理する。
+        - component(ボタン/セレクト)は custom_id を自前処理
+        - それ以外(スラッシュコマンド等)は tree に処理させる
         """
         try:
-            # component（ボタン/セレクト）以外は通常処理へ
-            if interaction.type != discord.InteractionType.component:
-                return await super().on_interaction(interaction)
+            # =========================
+            # 1) ボタン/セレクト処理
+            # =========================
+            if interaction.type == discord.InteractionType.component:
+                data = interaction.data or {}
+                custom_id = data.get("custom_id")
+                if not custom_id or not isinstance(custom_id, str):
+                    return  # 何もしない
 
-            data = interaction.data or {}
-            custom_id = data.get("custom_id")
-            if not custom_id or not isinstance(custom_id, str):
-                return await super().on_interaction(interaction)
-
-            # 3秒制限回避：まずdefer（すでに応答済みなら無視）
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.defer(ephemeral=True)
-            except Exception:
-                pass
-
-            # ========== panel:slot:<panel_id>:<slot_id> ==========
-            if custom_id.startswith("panel:slot:"):
-                parts = custom_id.split(":")
-                if len(parts) != 4:
-                    await interaction.followup.send("❌ ボタン形式が不正です", ephemeral=True)
-                    return
-
-                panel_id = int(parts[2])
-                slot_id = int(parts[3])
-
-                # デバッグログ（押せてるか確認用）
-                print(f"[CLICK] guild={interaction.guild_id} ch={interaction.channel_id} panel={panel_id} slot={slot_id} user={interaction.user.id}")
-
-                # DataManagerが2引数版/3引数版どっちでも動くようにする
+                # 3秒制限回避：先にdefer
                 try:
-                    ok, msg = await self.dm.toggle_reserve(
-                        slot_id,
-                        str(interaction.user.id),
-                        interaction.user.display_name,
-                    )
-                except TypeError:
-                    ok, msg = await self.dm.toggle_reserve(
-                        slot_id,
-                        str(interaction.user.id),
-                    )
+                    if not interaction.response.is_done():
+                        await interaction.response.defer(ephemeral=True)
+                except Exception:
+                    pass
 
-                await self.dm.render_panel(self, panel_id)
-                await interaction.followup.send(msg, ephemeral=True)
+                # panel:slot:<panel_id>:<slot_id>
+                if custom_id.startswith("panel:slot:"):
+                    parts = custom_id.split(":")
+                    if len(parts) != 4:
+                        await interaction.followup.send("❌ ボタン形式が不正です", ephemeral=True)
+                        return
+
+                    panel_id = int(parts[2])
+                    slot_id = int(parts[3])
+
+                    print(f"[CLICK] guild={interaction.guild_id} ch={interaction.channel_id} panel={panel_id} slot={slot_id} user={interaction.user.id}")
+
+                    # toggle_reserve が 2引数/3引数どっちでも動くようにする
+                    try:
+                        ok, msg = await self.dm.toggle_reserve(
+                            slot_id,
+                            str(interaction.user.id),
+                            interaction.user.display_name,
+                        )
+                    except TypeError:
+                        ok, msg = await self.dm.toggle_reserve(
+                            slot_id,
+                            str(interaction.user.id),
+                        )
+
+                    await self.dm.render_panel(self, panel_id)
+                    await interaction.followup.send(msg, ephemeral=True)
+                    return
+
+                # panel:breaktoggle:<panel_id>
+                if custom_id.startswith("panel:breaktoggle:"):
+                    if not is_admin(interaction):
+                        await interaction.followup.send("❌ 管理者のみ実行できます", ephemeral=True)
+                        return
+                    await interaction.followup.send("⚠️ 休憩機能はまだ未対応です（必要なら実装します）", ephemeral=True)
+                    return
+
+                # panel:breakselect:<panel_id>
+                if custom_id.startswith("panel:breakselect:"):
+                    if not is_admin(interaction):
+                        await interaction.followup.send("❌ 管理者のみ実行できます", ephemeral=True)
+                        return
+                    await interaction.followup.send("⚠️ 休憩機能はまだ未対応です（必要なら実装します）", ephemeral=True)
+                    return
+
+                # custom_id が想定外なら何もしない
                 return
 
-            # ========== panel:breaktoggle:<panel_id> ==========
-            if custom_id.startswith("panel:breaktoggle:"):
-                if not is_admin(interaction):
-                    await interaction.followup.send("❌ 管理者のみ実行できます", ephemeral=True)
-                    return
-
-                parts = custom_id.split(":")
-                if len(parts) != 3:
-                    await interaction.followup.send("❌ ボタン形式が不正です", ephemeral=True)
-                    return
-
-                panel_id = int(parts[2])
-                print(f"[BREAKTOGGLE] panel={panel_id} by={interaction.user.id}")
-
-                # DataManagerに休憩機能が無い場合も落とさない
-                if not hasattr(self.dm, "build_break_select_view"):
-                    await interaction.followup.send("⚠️ 休憩機能が未実装です（DataManagerに追加が必要）", ephemeral=True)
-                    return
-
-                view = await self.dm.build_break_select_view(panel_id)
-                await interaction.followup.send("休憩にする/解除する時間を選んでね👇", view=view, ephemeral=True)
-                return
-
-            # ========== panel:breakselect:<panel_id> ==========
-            if custom_id.startswith("panel:breakselect:"):
-                if not is_admin(interaction):
-                    await interaction.followup.send("❌ 管理者のみ実行できます", ephemeral=True)
-                    return
-
-                parts = custom_id.split(":")
-                if len(parts) != 3:
-                    await interaction.followup.send("❌ セレクト形式が不正です", ephemeral=True)
-                    return
-
-                panel_id = int(parts[2])
-                values = data.get("values") or []
-                if not values:
-                    await interaction.followup.send("❌ 選択値が取得できませんでした", ephemeral=True)
-                    return
-
-                slot_id = int(values[0])
-                print(f"[BREAKSELECT] panel={panel_id} slot={slot_id} by={interaction.user.id}")
-
-                if not hasattr(self.dm, "toggle_break_slot"):
-                    await interaction.followup.send("⚠️ 休憩機能が未実装です（DataManagerに追加が必要）", ephemeral=True)
-                    return
-
-                ok, msg = await self.dm.toggle_break_slot(panel_id, slot_id)
-                await self.dm.render_panel(self, panel_id)
-                await interaction.followup.send(msg, ephemeral=True)
-                return
-
-            # それ以外は通常処理へ
-            return await super().on_interaction(interaction)
+            # =========================
+            # 2) スラッシュコマンド等
+            # =========================
+            await self.tree.process_interaction(interaction)
 
         except Exception as e:
             print("on_interaction error:", repr(e))
             print(traceback.format_exc())
             try:
+                if not interaction.response.is_done():
+                    await interaction.response.defer(ephemeral=True)
                 await interaction.followup.send(f"❌ エラー: {repr(e)}", ephemeral=True)
             except Exception:
                 pass
