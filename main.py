@@ -11,7 +11,6 @@ import traceback
 from urllib.parse import urlparse
 
 from utils.data_manager import DataManager
-from utils.discord_utils import safe_send
 from commands.setup_channel import register as register_setup
 from commands.reset_channel import register as register_reset
 from commands.remind_channel import register as register_remind
