@@ -9,76 +9,42 @@ from views.panel_view import PanelView, BreakSelectView, build_panel_embed
 
 
 class DataManager:
-    """
-    ✅ slots 正式スキーマ前提（あなたの画像の通り）
-      - id (bigint)
-      - panel_id (bigint)
-      - start_at (timestamptz)
-      - end_at (timestamptz)
-      - is_break (bool)
-      - reserver_user_id (text)
-      - reserver_name (text)
-      - reserved_at (timestamptz)
-      - notified (bool)
-      - channel_id (bigint)
-      - guild_id (bigint)
-      - slot_time (text)
-    """
-
-    # --- Supabase(同期)を別スレッドで回す（Discordのイベントループを止めない） ---
+    # --- Supabase(同期)を別スレッドで回す ---
     async def _db(self, fn):
         return await asyncio.to_thread(fn)
 
     # ---------- notify prefs ----------
     async def get_notify_enabled(self, guild_id: str, user_id: str) -> bool:
         def work():
-            return (
-                sb.table("user_prefs")
-                .select("notify_enabled")
-                .eq("guild_id", guild_id)
-                .eq("user_id", user_id)
-                .execute()
-                .data
-            )
+            return sb.table("user_prefs").select("notify_enabled") \
+                .eq("guild_id", guild_id).eq("user_id", user_id).execute().data
 
         rows = await self._db(work)
         if not rows:
-            return True  # デフォルトON
-        return bool(rows[0].get("notify_enabled", True))
+            return True
+        return bool(rows[0]["notify_enabled"])
 
     async def set_notify_enabled(self, guild_id: str, user_id: str, enabled: bool):
         def work_select():
-            return (
-                sb.table("user_prefs")
-                .select("id")
-                .eq("guild_id", guild_id)
-                .eq("user_id", user_id)
-                .execute()
-                .data
-            )
+            return sb.table("user_prefs").select("id") \
+                .eq("guild_id", guild_id).eq("user_id", user_id).execute().data
 
         rows = await self._db(work_select)
 
         if rows:
             def work_update():
-                sb.table("user_prefs").update(
-                    {
-                        "notify_enabled": enabled,
-                        "updated_at": to_utc_iso(jst_now()),
-                    }
-                ).eq("id", rows[0]["id"]).execute()
-
+                sb.table("user_prefs").update({
+                    "notify_enabled": enabled,
+                    "updated_at": to_utc_iso(jst_now()),
+                }).eq("id", rows[0]["id"]).execute()
             await self._db(work_update)
         else:
             def work_insert():
-                sb.table("user_prefs").insert(
-                    {
-                        "guild_id": guild_id,
-                        "user_id": user_id,
-                        "notify_enabled": enabled,
-                    }
-                ).execute()
-
+                sb.table("user_prefs").insert({
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "notify_enabled": enabled,
+                }).execute()
             await self._db(work_insert)
 
     # ---------- panels ----------
@@ -94,33 +60,26 @@ class DataManager:
         notify_channel_id: str,
         created_by: str,
     ):
-        # panels 作成（重なり禁止はDB制約で弾かれる想定）
+        # panels作成
         try:
             def work_insert_panel():
-                return (
-                    sb.table("panels")
-                    .insert(
-                        {
-                            "guild_id": guild_id,
-                            "channel_id": channel_id,
-                            "day": str(day_date),
-                            "title": title,
-                            "start_at": to_utc_iso(start_at),
-                            "end_at": to_utc_iso(end_at),
-                            "interval_minutes": int(interval_minutes),
-                            "notify_channel_id": notify_channel_id,
-                            "created_by": created_by,
-                        }
-                    )
-                    .execute()
-                    .data
-                )
+                return sb.table("panels").insert({
+                    "guild_id": guild_id,
+                    "channel_id": channel_id,
+                    "day": str(day_date),
+                    "title": title,
+                    "start_at": to_utc_iso(start_at),
+                    "end_at": to_utc_iso(end_at),
+                    "interval_minutes": int(interval_minutes),
+                    "notify_channel_id": notify_channel_id,
+                    "created_by": created_by,
+                }).execute().data
 
             panel = await self._db(work_insert_panel)
         except Exception:
             return {
                 "ok": False,
-                "error": "このチャンネルでは、その時間帯に既に募集があります（時間が重なる募集は作れません）。作り直すなら /reset_channel を先に実行してね。",
+                "error": "このチャンネルでは、その時間帯に既に募集があります（時間が重なる募集は作れません）。作り直すなら /reset_channel を先に実行してね。"
             }
 
         if not panel:
@@ -128,48 +87,38 @@ class DataManager:
 
         panel_id = panel[0]["id"]
 
-        # slots 作成（あなたの slots 列に合わせる）
+        # slots 作成（あなたのDB列に合わせる）
         inserts = []
         cur = start_at
         while cur < end_at:
             nxt = cur + timedelta(minutes=int(interval_minutes))
-            inserts.append(
-                {
-                    "guild_id": int(guild_id),
-                    "channel_id": int(channel_id),
-                    "panel_id": int(panel_id),
-                    "slot_time": fmt_hm(cur),      # 表示用 "19:00"
-                    "start_at": to_utc_iso(cur),
-                    "end_at": to_utc_iso(nxt),
-                    "is_break": False,
-                    "reserver_user_id": None,
-                    "reserver_name": None,
-                    "reserved_at": None,
-                    "notified": False,
-                }
-            )
+            inserts.append({
+                "panel_id": panel_id,
+                "start_at": to_utc_iso(cur),
+                "end_at": to_utc_iso(nxt),
+                "is_break": False,
+                "reserver_user_id": None,
+                "reserver_name": None,
+                "reserved_at": None,
+                "notified": False,
+                "channel_id": int(channel_id),
+                "guild_id": int(guild_id),
+                "slot_time": fmt_hm(cur),
+            })
             cur = nxt
 
         if inserts:
             def work_insert_slots():
                 sb.table("slots").insert(inserts).execute()
-
             await self._db(work_insert_slots)
 
         return {"ok": True, "panel_id": panel_id}
 
-    # /reset_channel 用：guild+channel の募集を全削除（slots→panelsの順）
+    # /reset_channel 用：guild+channel の募集を全削除（slots→panels）
     async def delete_panel(self, guild_id: str, channel_id: str) -> bool:
         def work():
-            panels = (
-                sb.table("panels")
-                .select("id")
-                .eq("guild_id", guild_id)
-                .eq("channel_id", channel_id)
-                .execute()
-                .data
-                or []
-            )
+            panels = sb.table("panels").select("id") \
+                .eq("guild_id", guild_id).eq("channel_id", channel_id).execute().data or []
             panel_ids = [p["id"] for p in panels]
 
             if panel_ids:
@@ -182,17 +131,10 @@ class DataManager:
 
     async def delete_panel_by_channel_day(self, guild_id: str, channel_id: str, day_date) -> bool:
         def work_select():
-            return (
-                sb.table("panels")
-                .select("id")
-                .eq("guild_id", guild_id)
-                .eq("channel_id", channel_id)
-                .eq("day", str(day_date))
-                .order("start_at")
-                .execute()
-                .data
-                or []
-            )
+            return sb.table("panels").select("id") \
+                .eq("guild_id", guild_id).eq("channel_id", channel_id).eq("day", str(day_date)) \
+                .order("start_at") \
+                .execute().data or []
 
         rows = await self._db(work_select)
         if not rows:
@@ -208,21 +150,12 @@ class DataManager:
         await self._db(work_delete)
         return True
 
-    async def update_notify_channel_for_channel_day(
-        self, guild_id: str, channel_id: str, day_date, notify_channel_id: str
-    ) -> bool:
+    async def update_notify_channel_for_channel_day(self, guild_id: str, channel_id: str, day_date, notify_channel_id: str) -> bool:
         def work_select():
-            return (
-                sb.table("panels")
-                .select("id")
-                .eq("guild_id", guild_id)
-                .eq("channel_id", channel_id)
-                .eq("day", str(day_date))
-                .order("start_at")
-                .execute()
-                .data
-                or []
-            )
+            return sb.table("panels").select("id") \
+                .eq("guild_id", guild_id).eq("channel_id", channel_id).eq("day", str(day_date)) \
+                .order("start_at") \
+                .execute().data or []
 
         rows = await self._db(work_select)
         if not rows:
@@ -250,15 +183,7 @@ class DataManager:
             return
 
         def work_slots():
-            return (
-                sb.table("slots")
-                .select("*")
-                .eq("panel_id", panel_id)
-                .order("start_at")
-                .execute()
-                .data
-                or []
-            )
+            return sb.table("slots").select("*").eq("panel_id", panel_id).order("start_at").execute().data or []
 
         slots = await self._db(work_slots)
 
@@ -278,7 +203,7 @@ class DataManager:
                 dot = "🔴"
                 mention = f" <@{r['reserver_user_id']}>"
                 style = discord.ButtonStyle.danger
-                disabled = False  # 本人キャンセル用（toggleで制御）
+                disabled = False
             else:
                 dot = "🟢"
                 mention = ""
@@ -286,19 +211,17 @@ class DataManager:
                 disabled = False
 
             lines.append(f"{dot} {label}{mention}")
-            buttons.append(
-                {
-                    "slot_id": r["id"],
-                    "label": label,
-                    "style": style,
-                    "disabled": disabled,
-                }
-            )
+            buttons.append({
+                "slot_id": r["id"],
+                "label": label,
+                "style": style,
+                "disabled": disabled,
+            })
 
         day_text = f"📅 {panel['day']}（JST） / interval {panel['interval_minutes']}min"
         title = panel.get("title") or "募集パネル"
         embed = build_panel_embed(title, day_text, lines)
-        view = PanelView(int(panel_id), buttons)
+        view = PanelView(self, panel_id, buttons)  # ★ dm(self) を渡す
 
         mid = panel.get("panel_message_id")
         if mid:
@@ -326,82 +249,43 @@ class DataManager:
             return (False, "枠が見つかりません")
         slot = slot_rows[0]
 
-        # 休憩は予約不可
         if slot.get("is_break"):
-            return (False, "休憩枠です")
-
-        panel_id = slot["panel_id"]
+            return (False, "休憩枠です（予約できません）")
 
         # 空き → 予約（先着）
         if not slot.get("reserver_user_id"):
-            # 1人1枠（同panel）
-            def work_existing():
-                return (
-                    sb.table("slots")
-                    .select("id")
-                    .eq("panel_id", panel_id)
-                    .eq("reserver_user_id", user_id)
-                    .execute()
-                    .data
-                )
-
-            existing = await self._db(work_existing)
-            if existing:
-                return (False, "すでにこの募集で予約しています（1人1枠）")
-
             def work_update():
-                return (
-                    sb.table("slots")
-                    .update(
-                        {
-                            "reserver_user_id": user_id,
-                            "reserver_name": user_name,
-                            "reserved_at": to_utc_iso(jst_now()),
-                            "notified": False,
-                        }
-                    )
-                    .eq("id", slot_id)
-                    .is_("reserver_user_id", None)  # 競合防止（先着）
-                    .execute()
-                    .data
-                )
+                return sb.table("slots").update({
+                    "reserver_user_id": user_id,
+                    "reserver_name": user_name,
+                    "reserved_at": to_utc_iso(jst_now()),
+                    "notified": False,
+                }).eq("id", slot_id).is_("reserver_user_id", None).execute().data
 
             updated = await self._db(work_update)
             if not updated:
                 return (False, "その枠はもう埋まっています")
-
             return (True, "予約しました ✅（もう一度押すとキャンセル）")
 
         # 予約済み → 本人ならキャンセル
         if str(slot.get("reserver_user_id")) == str(user_id):
             def work_cancel():
-                sb.table("slots").update(
-                    {
-                        "reserver_user_id": None,
-                        "reserver_name": None,
-                        "reserved_at": None,
-                        "notified": False,
-                    }
-                ).eq("id", slot_id).execute()
+                sb.table("slots").update({
+                    "reserver_user_id": None,
+                    "reserver_name": None,
+                    "reserved_at": None,
+                    "notified": False,
+                }).eq("id", slot_id).execute()
 
             await self._db(work_cancel)
             return (True, "キャンセルしました ✅")
 
-        # 他人の予約
         return (False, "その枠は埋まっています（本人のみキャンセル可）")
 
-    # ---------- break toggle (admin) ----------
+    # ---------- break select (admin) ----------
     async def build_break_select_view(self, panel_id: int) -> BreakSelectView:
         def work_slots():
-            return (
-                sb.table("slots")
-                .select("*")
-                .eq("panel_id", panel_id)
-                .order("start_at")
-                .execute()
-                .data
-                or []
-            )
+            return sb.table("slots").select("*").eq("panel_id", panel_id).order("start_at").execute().data or []
 
         slots = await self._db(work_slots)
 
@@ -417,34 +301,26 @@ class DataManager:
             else:
                 desc = "空き（選ぶと休憩）"
 
-            options.append(
-                discord.SelectOption(
-                    label=label,
-                    value=str(r["id"]),
-                    description=desc,
-                )
-            )
+            options.append(discord.SelectOption(
+                label=label,
+                value=str(r["id"]),
+                description=desc,
+            ))
 
-        return BreakSelectView(panel_id, options)
+        return BreakSelectView(self, panel_id, options)
 
     async def toggle_break_slot(self, panel_id: int, slot_id: int):
         def work_slot():
-            return (
-                sb.table("slots")
-                .select("*")
-                .eq("id", slot_id)
-                .eq("panel_id", panel_id)
-                .execute()
-                .data
-            )
+            return sb.table("slots").select("*") \
+                .eq("id", slot_id).eq("panel_id", panel_id).execute().data
 
         rows = await self._db(work_slot)
         if not rows:
             return (False, "枠が見つかりません")
         slot = rows[0]
 
-        # 予約が入ってる枠は休憩にできない（事故防止）
-        if slot.get("reserver_user_id") and not slot.get("is_break"):
+        # 予約が入っている枠は休憩にできない（事故防止）
+        if slot.get("reserver_user_id") and not bool(slot.get("is_break")):
             return (False, "予約が入っている枠は休憩にできません")
 
         new_val = not bool(slot.get("is_break"))
@@ -457,17 +333,11 @@ class DataManager:
 
     # ---------- 3min reminders ----------
     async def send_3min_reminders(self, bot: discord.Client):
-        # 未通知 & 予約済みのみ
         def work_rows():
-            return (
-                sb.table("slots")
-                .select("*")
-                .eq("notified", False)
-                .not_.is_("reserver_user_id", "null")
-                .execute()
-                .data
-                or []
-            )
+            return sb.table("slots").select("*") \
+                .eq("notified", False) \
+                .not_.is_("reserver_user_id", "null") \
+                .execute().data or []
 
         rows = await self._db(work_rows)
 
@@ -476,7 +346,6 @@ class DataManager:
             start = from_utc_iso(slot["start_at"])
             diff = (start - now).total_seconds()
 
-            # 3分前（誤差吸収）
             if 160 <= diff <= 220:
                 def work_panel():
                     return sb.table("panels").select("*").eq("id", slot["panel_id"]).execute().data
@@ -491,7 +360,7 @@ class DataManager:
                     continue
 
                 uid = str(slot["reserver_user_id"])
-                enabled = await self.get_notify_enabled(str(panel["guild_id"]), uid)
+                enabled = await self.get_notify_enabled(panel["guild_id"], uid)
 
                 if enabled:
                     await notify_ch.send(f"⏰ 3分前：{fmt_hm(start)} の枠です <@{uid}>")
