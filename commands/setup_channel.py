@@ -12,7 +12,6 @@ def _is_admin(interaction: discord.Interaction) -> bool:
     return isinstance(m, discord.Member) and m.guild_permissions.administrator
 
 
-# Choices は最大25なので、hour(24個) / minute(12個) に分ける
 HOUR_CHOICES = [app_commands.Choice(name=f"{h:02d}", value=h) for h in range(24)]
 MIN_CHOICES = [app_commands.Choice(name=f"{m:02d}", value=m) for m in (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55)]
 INTERVAL_CHOICES = [
@@ -32,6 +31,7 @@ def register(tree: app_commands.CommandTree, dm):
         end_min="終了（分）",
         interval="枠の間隔（分）",
         notify_channel="通知を送るチャンネル（3分前通知）※今は一旦ダミーでもOK",
+        ping_everyone="募集開始時に @everyone を付ける？（管理者用）",
     )
     @app_commands.choices(
         start_hour=HOUR_CHOICES,
@@ -49,6 +49,7 @@ def register(tree: app_commands.CommandTree, dm):
         end_min: int,
         interval: int,
         notify_channel: discord.TextChannel,
+        ping_everyone: bool = False,  # ★追加：True/Falseで選べる
     ):
         if not _is_admin(interaction):
             await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
@@ -58,7 +59,6 @@ def register(tree: app_commands.CommandTree, dm):
             await safe_send(interaction, "❌ notify_channel を選んでね", ephemeral=True)
             return
 
-        # 3秒制限対策
         await safe_defer(interaction, ephemeral=True, thinking=True)
 
         try:
@@ -90,6 +90,25 @@ def register(tree: app_commands.CommandTree, dm):
 
             panel_id = res["panel_id"]
             await dm.render_panel(interaction.client, panel_id)
+
+            # ★募集開始時の @everyone（別メッセージで送る方式）
+            if ping_everyone:
+                ch = interaction.channel
+                if isinstance(ch, discord.TextChannel):
+                    me = ch.guild.me
+                    can = bool(me and ch.permissions_for(me).mention_everyone)
+                    if can:
+                        await ch.send(
+                            "@everyone 募集パネルを作成しました！下のボタンから予約できます。",
+                            allowed_mentions=discord.AllowedMentions(everyone=True)
+                        )
+                    else:
+                        # 権限が無いなら管理者にだけ警告（メンションはしない）
+                        await safe_send(
+                            interaction,
+                            "⚠️ @everyone を付けたいけど、Botに **Mention Everyone** 権限がありません（Discordの招待権限 or チャンネル権限で付与してね）",
+                            ephemeral=True,
+                        )
 
             await safe_send(interaction, "✅ パネルを作成しました（ボタンで予約 / もう一度押すとキャンセル）", ephemeral=True)
 
