@@ -70,7 +70,7 @@ class MyClient(discord.Client):
         if not reminder_loop.is_running():
             reminder_loop.start(self)
 
-    async def on_interaction(self, interaction: discord.Interaction):
+
         """
         - component(ボタン/セレクト)は custom_id を自前処理
         - それ以外(スラッシュコマンド等)は tree に処理させる
