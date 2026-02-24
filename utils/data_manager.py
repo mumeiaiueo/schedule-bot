@@ -331,7 +331,7 @@ class DataManager:
         await self._db(work_update)
         return (True, "休憩にしました" if new_val else "休憩を解除しました")
 
-    # ---------- 3min reminders ----------
+        # ---------- 3min reminders ----------
     async def send_3min_reminders(self, bot: discord.Client):
         def work_rows():
             return sb.table("slots").select("*") \
@@ -342,30 +342,48 @@ class DataManager:
         rows = await self._db(work_rows)
 
         now = jst_now()
+
         for slot in rows:
             start = from_utc_iso(slot["start_at"])
             diff = (start - now).total_seconds()
 
-            if 160 <= diff <= 220:
-                def work_panel():
-                    return sb.table("panels").select("*").eq("id", slot["panel_id"]).execute().data
+            # 3分前判定（誤差吸収）
+            if not (160 <= diff <= 220):
+                continue
 
-                panel_rows = await self._db(work_panel)
-                if not panel_rows:
-                    continue
-                panel = panel_rows[0]
+            # panel取得
+            def work_panel():
+                return sb.table("panels").select("*") \
+                    .eq("id", slot["panel_id"]).execute().data
 
-                notify_ch = bot.get_channel(int(panel["notify_channel_id"]))
-                if not notify_ch:
-                    continue
+            panel_rows = await self._db(work_panel)
+            if not panel_rows:
+                continue
 
-                uid = str(slot["reserver_user_id"])
-                enabled = await self.get_notify_enabled(panel["guild_id"], uid)
+            panel = panel_rows[0]
 
-                if enabled:
-                    await notify_ch.send(f"⏰ 3分前：{fmt_hm(start)} の枠です <@{uid}>")
+            # 🔴 管理者設定チェック
+            if not panel.get("notify_enabled", True):
+                continue
 
-                def work_set_notified():
-                    sb.table("slots").update({"notified": True}).eq("id", slot["id"]).execute()
+            if panel.get("notify_paused", False):
+                continue
 
-                await self._db(work_set_notified)
+            notify_ch = bot.get_channel(int(panel["notify_channel_id"]))
+            if not notify_ch:
+                continue
+
+            uid = str(slot["reserver_user_id"])
+
+            try:
+                await notify_ch.send(
+                    f"⏰ 3分前：{fmt_hm(start)} の枠です <@{uid}>"
+                )
+            except Exception:
+                continue
+
+            def work_set_notified():
+                sb.table("slots").update({"notified": True}) \
+                    .eq("id", slot["id"]).execute()
+
+            await self._db(work_set_notified)
