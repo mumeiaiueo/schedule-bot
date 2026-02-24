@@ -226,6 +226,83 @@ class DataManager:
 
         await self._db(work_update_mid)
 
+# =========================================================
+# ▶▶▶ ここに入れる（toggle_reserve の直前） ▶▶▶
+# =========================================================
+
+# ---------- break toggle (admin) ----------
+async def build_break_select_view(self, panel_id: int):
+    from views.panel_view import BreakSelectView
+
+    def work_slots():
+        return (
+            sb.table("slots")
+            .select("*")
+            .eq("panel_id", panel_id)
+            .order("start_at")
+            .execute()
+            .data
+            or []
+        )
+
+    slots = await self._db(work_slots)
+
+    options = []
+    for r in slots[:25]:
+        sdt = from_utc_iso(r["start_at"])
+        label = fmt_hm(sdt)
+
+        if r.get("is_break"):
+            desc = "休憩中（選ぶと解除）"
+        elif r.get("reserver_user_id"):
+            desc = "予約あり（休憩不可）"
+        else:
+            desc = "空き（選ぶと休憩）"
+
+        options.append(
+            discord.SelectOption(
+                label=label,
+                value=str(r["id"]),
+                description=desc,
+            )
+        )
+
+    return BreakSelectView(panel_id, options)
+
+
+async def toggle_break_slot(self, panel_id: int, slot_id: int):
+    def work_slot():
+        return (
+            sb.table("slots")
+            .select("*")
+            .eq("id", slot_id)
+            .eq("panel_id", panel_id)
+            .execute()
+            .data
+            or []
+        )
+
+    rows = await self._db(work_slot)
+    if not rows:
+        return (False, "枠が見つかりません")
+
+    slot = rows[0]
+
+    if slot.get("reserver_user_id") and not slot.get("is_break"):
+        return (False, "予約が入っている枠は休憩にできません")
+
+    new_val = not bool(slot.get("is_break"))
+
+    def work_update():
+        sb.table("slots").update({"is_break": new_val}).eq("id", slot_id).execute()
+
+    await self._db(work_update)
+    return (True, "休憩にしました" if new_val else "休憩を解除しました")
+
+# =========================================================
+# ▶▶▶ ここまで追加 ▶▶▶
+# ======================================================
+
     # ---------- reserve toggle ----------
     async def toggle_reserve(self, slot_id: int, user_id: str, user_name: str):
         def work_slot():
