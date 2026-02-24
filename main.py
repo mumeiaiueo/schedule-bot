@@ -42,7 +42,7 @@ class MyClient(discord.Client):
 
 client = MyClient()
 
-@tasks.loop(seconds=20)
+@tasks.loop(seconds=60)
 async def reminder_loop(bot: MyClient):
     try:
         await bot.dm.send_3min_reminders(bot)
