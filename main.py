@@ -11,6 +11,7 @@ import traceback
 from urllib.parse import urlparse
 
 from utils.data_manager import DataManager
+from utils.discord_utils import safe_send  # ★追加
 from commands.setup_channel import register as register_setup
 from commands.reset_channel import register as register_reset
 from commands.remind_channel import register as register_remind
@@ -19,9 +20,6 @@ from commands.notify import register as register_notify
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-
-# Supabaseは DataManager/utils/db.py 側で使うけど、
-# DNSチェックに使うのでここでも読む
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 
 intents = discord.Intents.default()
@@ -36,6 +34,11 @@ def supabase_host_from_url(url: str | None) -> str | None:
         return None
 
 
+def is_admin(interaction: discord.Interaction) -> bool:
+    m = interaction.user
+    return isinstance(m, discord.Member) and m.guild_permissions.administrator
+
+
 class MyClient(discord.Client):
     def __init__(self):
         super().__init__(intents=intents)
@@ -45,7 +48,7 @@ class MyClient(discord.Client):
 
         # reminder のバックオフ制御
         self._reminder_fail_count = 0
-        self._reminder_pause_until = 0.0  # loop.time() 기준
+        self._reminder_pause_until = 0.0  # loop.time()
 
     async def setup_hook(self):
         register_setup(self.tree, self.dm)
@@ -69,26 +72,97 @@ class MyClient(discord.Client):
         if not reminder_loop.is_running():
             reminder_loop.start(self)
 
+    async def on_interaction(self, interaction: discord.Interaction):
+        # まず通常のイベント処理（スラッシュコマンドなど）
+        await super().on_interaction(interaction)
+
+        # ボタン/セレクトの custom_id をここで処理
+        try:
+            if interaction.type != discord.InteractionType.component:
+                return
+
+            data = interaction.data or {}
+            custom_id = data.get("custom_id")
+            if not custom_id or not isinstance(custom_id, str):
+                return
+
+            # panel:slot:<panel_id>:<slot_id>
+            if custom_id.startswith("panel:slot:"):
+                parts = custom_id.split(":")
+                if len(parts) != 4:
+                    return
+                panel_id = int(parts[2])
+                slot_id = int(parts[3])
+
+                ok, msg = await self.dm.toggle_reserve(
+                    slot_id,
+                    str(interaction.user.id),
+                    interaction.user.display_name,
+                )
+                await self.dm.render_panel(self, panel_id)
+                await safe_send(interaction, msg, ephemeral=True)
+                return
+
+            # panel:breaktoggle:<panel_id>
+            if custom_id.startswith("panel:breaktoggle:"):
+                if not is_admin(interaction):
+                    await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+                    return
+
+                parts = custom_id.split(":")
+                if len(parts) != 3:
+                    return
+                panel_id = int(parts[2])
+
+                view = await self.dm.build_break_select_view(panel_id)
+                # まずメッセージを返してから view を followup で送る（安全）
+                await safe_send(interaction, "休憩にする/解除する時間を選んでね👇", ephemeral=True)
+                await interaction.followup.send(view=view, ephemeral=True)
+                return
+
+            # panel:breakselect:<panel_id>（Select）
+            if custom_id.startswith("panel:breakselect:"):
+                if not is_admin(interaction):
+                    await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+                    return
+
+                parts = custom_id.split(":")
+                if len(parts) != 3:
+                    return
+                panel_id = int(parts[2])
+
+                values = data.get("values") or []
+                if not values:
+                    await safe_send(interaction, "❌ 選択値が取得できませんでした", ephemeral=True)
+                    return
+
+                slot_id = int(values[0])
+                ok, msg = await self.dm.toggle_break_slot(panel_id, slot_id)
+                await self.dm.render_panel(self, panel_id)
+                await safe_send(interaction, msg, ephemeral=True)
+                return
+
+        except Exception as e:
+            # 二重返信しないよう safe_send
+            await safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
+
 
 client = MyClient()
 
 
 @tasks.loop(seconds=60, reconnect=True)
 async def reminder_loop(bot: MyClient):
-    # 再接続直後など
     if not bot.is_ready():
         return
 
     loop = asyncio.get_running_loop()
 
-    # バックオフ中なら何もしない
     if bot._reminder_pause_until and loop.time() < bot._reminder_pause_until:
         return
 
     try:
         await bot.dm.send_3min_reminders(bot)
 
-        # 成功したら失敗回数リセット
         bot._reminder_fail_count = 0
         bot._reminder_pause_until = 0.0
 
@@ -98,11 +172,8 @@ async def reminder_loop(bot: MyClient):
         print("reminder_loop error:", repr(e))
         print(traceback.format_exc())
 
-        # 失敗が続くと待ち時間を伸ばす（最大10分）
-        # 1回目:60s, 2回目:120s, 3回目:240s, ... 最大600s
         backoff = min(600, 60 * (2 ** (bot._reminder_fail_count - 1)))
 
-        # DNS/ネット系っぽいときは最初から少し長めでもOK
         msg = repr(e)
         if "Name or service not known" in msg or "ConnectError" in msg or "Temporary failure in name resolution" in msg:
             backoff = max(backoff, 120)
@@ -114,14 +185,13 @@ async def reminder_loop(bot: MyClient):
 @reminder_loop.before_loop
 async def before_reminder_loop():
     await client.wait_until_ready()
-    await asyncio.sleep(10)  # 起動直後の不安定回避
+    await asyncio.sleep(10)
 
     host = supabase_host_from_url(SUPABASE_URL)
     if not host:
         print("⚠️ SUPABASE_URL is missing or invalid. DNS check skipped.")
         return
 
-    # DNS解決テスト（失敗しても落とさない）
     try:
         ip = socket.gethostbyname(host)
         print(f"✅ DNS check OK: {host} -> {ip}")
@@ -133,14 +203,12 @@ async def main():
     if not TOKEN or not TOKEN.strip():
         raise RuntimeError("DISCORD_TOKEN が未設定です")
 
-    # 永久ループで落ちても復帰
     while True:
         try:
             async with client:
                 await client.start(TOKEN)
 
         except discord.HTTPException as e:
-            # 429など
             print("discord HTTPException:", repr(e))
             print(traceback.format_exc())
             await asyncio.sleep(90)
