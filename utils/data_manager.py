@@ -91,11 +91,14 @@ class DataManager:
         while cur < end_at:
             nxt = cur + timedelta(minutes=interval_minutes)
             inserts.append({
-                "panel_id": panel_id,
-                "start_at": to_utc_iso(cur),
-                "end_at": to_utc_iso(nxt),
-                "is_break": False,
-            })
+    "guild_id": int(guild_id),
+    "channel_id": int(channel_id),
+    "panel_id": panel_id,
+    "slot_time": fmt_hm(cur),        # 例: "19:00"
+    "start_at": to_utc_iso(cur),
+    "user_id": None,
+    "notified": False,
+})
             cur = nxt
 
         if inserts:
