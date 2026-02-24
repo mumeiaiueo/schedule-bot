@@ -1,32 +1,24 @@
 # commands/notify.py
 import discord
 from discord import app_commands
-
 from utils.discord_utils import safe_send, safe_defer
 
+
 def register(tree: app_commands.CommandTree, dm):
-    @tree.command(name="notify", description="3分前通知を ON/OFF します（自分用）")
-    @app_commands.describe(mode="on で通知ON / off で通知OFF")
-    async def notify(interaction: discord.Interaction, mode: str):
-        await safe_defer(interaction, ephemeral=True, thinking=True)
+    @tree.command(name="notify", description="3分前通知を ON/OFF します（自分だけ）")
+    @app_commands.describe(mode="on で有効 / off で無効")
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="ON（有効）", value="on"),
+        app_commands.Choice(name="OFF（無効）", value="off"),
+    ])
+    async def notify(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+        await safe_defer(interaction, ephemeral=True)
 
-        try:
-            mode2 = (mode or "").strip().lower()
-            if mode2 not in ("on", "off"):
-                await safe_send(interaction, "❌ mode は on か off で指定してね（例: /notify on）", ephemeral=True)
-                return
+        enabled = (mode.value == "on")
+        await dm.set_notify_enabled(
+            guild_id=str(interaction.guild_id),
+            user_id=str(interaction.user.id),
+            enabled=enabled,
+        )
 
-            enabled = (mode2 == "on")
-            await dm.set_notify_enabled(
-                guild_id=str(interaction.guild_id),
-                user_id=str(interaction.user.id),
-                enabled=enabled,
-            )
-            await safe_send(interaction, f"✅ 3分前通知を {'ON' if enabled else 'OFF'} にしました", ephemeral=True)
-
-        except Exception as e:
-            await safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
-
-    @notify.error
-    async def notify_error(interaction: discord.Interaction, error: Exception):
-        await safe_send(interaction, f"❌ エラー: {error}", ephemeral=True)
+        await safe_send(interaction, f"✅ 3分前通知：{'ON' if enabled else 'OFF'} にしました", ephemeral=True)
