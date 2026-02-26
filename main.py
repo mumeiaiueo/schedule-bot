@@ -16,6 +16,7 @@ from commands.reset_channel import register as register_reset
 from commands.remind_channel import register as register_remind
 from commands.notify import register as register_notify
 from commands.notify_panel import register as register_notify_panel
+from commands.set_manager_role import register as register_manager_role
 
 load_dotenv()
 
