@@ -5,6 +5,7 @@ import re
 
 from utils.time_utils import jst_now
 from utils.discord_utils import safe_send, safe_defer
+from utils.perm_utils import is_manager
 
 
 def _is_admin(interaction: discord.Interaction) -> bool:
