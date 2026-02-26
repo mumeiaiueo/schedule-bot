@@ -58,8 +58,8 @@ def register(tree: app_commands.CommandTree, dm):
         notify_channel: discord.TextChannel,
         ping_everyone: bool = False,
     ):
-        if not _is_admin(interaction):
-            await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+        if not await is_manager(interaction, dm):
+            await safe_send(interaction, "❌ 管理者または管理ロールが必要です", ephemeral=True)
             return
 
         await safe_defer(interaction, ephemeral=True, thinking=True)
