@@ -1,14 +1,15 @@
-print("🔥 BOOT MARKER v2026-02-24-stable-reminder FULL v2 🔥")
+# main.py  ✅ 完全コピペ版
+print("🔥 BOOT MARKER v2026-02-24-stable-reminder FULL v3 🔥")
 
 import asyncio
 import os
-import discord
-from discord.ext import tasks
-from dotenv import load_dotenv
-
 import socket
 import traceback
 from urllib.parse import urlparse
+
+import discord
+from discord.ext import tasks
+from dotenv import load_dotenv
 
 from utils.data_manager import DataManager
 from commands.setup_channel import register as register_setup
@@ -35,9 +36,30 @@ def supabase_host_from_url(url: str | None) -> str | None:
         return None
 
 
-def is_admin(interaction: discord.Interaction) -> bool:
+def _is_admin(interaction: discord.Interaction) -> bool:
     m = interaction.user
     return isinstance(m, discord.Member) and m.guild_permissions.administrator
+
+
+async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True, thinking: bool = False):
+    """3秒制限回避。既に応答済みなら何もしない。"""
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=ephemeral, thinking=thinking)
+    except Exception:
+        pass
+
+
+async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
+    """二重返信でも落ちない送信。"""
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(content, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(content, ephemeral=ephemeral)
+    except Exception:
+        # 最後の砦（ここで落とさない）
+        pass
 
 
 class MyClient(discord.Client):
@@ -52,6 +74,7 @@ class MyClient(discord.Client):
         self._reminder_pause_until = 0.0  # loop.time()
 
     async def setup_hook(self):
+        # スラッシュコマンド登録
         register_setup(self.tree, self.dm)
         register_reset(self.tree, self.dm)
         register_remind(self.tree, self.dm)
@@ -59,8 +82,8 @@ class MyClient(discord.Client):
         register_notify_panel(self.tree, self.dm)
         register_manager_role(self.tree, self.dm)
 
-
     async def on_ready(self):
+        # sync は起動後1回だけ
         if not self._synced:
             try:
                 await self.tree.sync()
@@ -75,90 +98,112 @@ class MyClient(discord.Client):
         if not reminder_loop.is_running():
             reminder_loop.start(self)
 
-
+    async def on_interaction(self, interaction: discord.Interaction):
         """
+        ✅ ここがボタン/セレクト処理の本体
         - component(ボタン/セレクト)は custom_id を自前処理
         - それ以外(スラッシュコマンド等)は tree に処理させる
         """
         try:
-            # =========================
-            # 1) ボタン/セレクト処理
-            # =========================
+            # 1) ボタン / セレクト
             if interaction.type == discord.InteractionType.component:
                 data = interaction.data or {}
                 custom_id = data.get("custom_id")
                 if not custom_id or not isinstance(custom_id, str):
-                    return  # 何もしない
+                    return
 
-                # 3秒制限回避：先にdefer
-                try:
-                    if not interaction.response.is_done():
-                        await interaction.response.defer(ephemeral=True)
-                except Exception:
-                    pass
+                # 先に defer（3秒制限回避）
+                await safe_defer(interaction, ephemeral=True)
 
+                # -------------------------
                 # panel:slot:<panel_id>:<slot_id>
+                # -------------------------
                 if custom_id.startswith("panel:slot:"):
                     parts = custom_id.split(":")
                     if len(parts) != 4:
-                        await interaction.followup.send("❌ ボタン形式が不正です", ephemeral=True)
+                        await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
                         return
 
                     panel_id = int(parts[2])
                     slot_id = int(parts[3])
 
-                    print(f"[CLICK] guild={interaction.guild_id} ch={interaction.channel_id} panel={panel_id} slot={slot_id} user={interaction.user.id}")
+                    # 予約トグル
+                    ok, msg = await self.dm.toggle_reserve(
+                        slot_id,
+                        str(interaction.user.id),
+                        interaction.user.display_name,
+                    )
 
-                    # toggle_reserve が 2引数/3引数どっちでも動くようにする
-                    try:
-                        ok, msg = await self.dm.toggle_reserve(
-                            slot_id,
-                            str(interaction.user.id),
-                            interaction.user.display_name,
-                        )
-                    except TypeError:
-                        ok, msg = await self.dm.toggle_reserve(
-                            slot_id,
-                            str(interaction.user.id),
-                        )
-
+                    # 表示更新
                     await self.dm.render_panel(self, panel_id)
-                    await interaction.followup.send(msg, ephemeral=True)
+                    await safe_send(interaction, msg, ephemeral=True)
                     return
 
+                # -------------------------
                 # panel:breaktoggle:<panel_id>
+                # -------------------------
                 if custom_id.startswith("panel:breaktoggle:"):
-                    if not is_admin(interaction):
-                        await interaction.followup.send("❌ 管理者のみ実行できます", ephemeral=True)
+                    # 管理者(または管理ロール)だけ許可 → ここはひとまず管理者
+                    if not _is_admin(interaction):
+                        await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
                         return
-                    await interaction.followup.send("⚠️ 休憩機能はまだ未対応です（必要なら実装します）", ephemeral=True)
+
+                    parts = custom_id.split(":")
+                    if len(parts) != 3:
+                        await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
+                        return
+
+                    panel_id = int(parts[2])
+
+                    # 休憩選択UIを表示
+                    view = await self.dm.build_break_select_view(panel_id)
+
+                    # 先にメッセージ返してから followup で view を出す（安定）
+                    await safe_send(interaction, "⌚️ 休憩にする/解除する時間を選んでね👇", ephemeral=True)
+                    try:
+                        await interaction.followup.send(view=view, ephemeral=True)
+                    except Exception:
+                        # followupが失敗しても落とさない
+                        pass
                     return
 
-                # panel:breakselect:<panel_id>
+                # -------------------------
+                # panel:breakselect:<panel_id>（Select）
+                # -------------------------
                 if custom_id.startswith("panel:breakselect:"):
-                    if not is_admin(interaction):
-                        await interaction.followup.send("❌ 管理者のみ実行できます", ephemeral=True)
+                    if not _is_admin(interaction):
+                        await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
                         return
-                    await interaction.followup.send("⚠️ 休憩機能はまだ未対応です（必要なら実装します）", ephemeral=True)
+
+                    parts = custom_id.split(":")
+                    if len(parts) != 3:
+                        await safe_send(interaction, "❌ セレクト形式が不正です", ephemeral=True)
+                        return
+
+                    panel_id = int(parts[2])
+
+                    values = data.get("values") or []
+                    if not values:
+                        await safe_send(interaction, "❌ 選択値が取得できませんでした", ephemeral=True)
+                        return
+
+                    slot_id = int(values[0])
+
+                    ok, msg = await self.dm.toggle_break_slot(panel_id, slot_id)
+                    await self.dm.render_panel(self, panel_id)
+                    await safe_send(interaction, msg, ephemeral=True)
                     return
 
-                # custom_id が想定外なら何もしない
+                # 想定外 custom_id
                 return
 
-            # =========================
-            # 2) スラッシュコマンド等
-            # =========================
+            # 2) スラッシュコマンド等（discord.py が処理）
             await self.tree.process_interaction(interaction)
 
         except Exception as e:
             print("on_interaction error:", repr(e))
             print(traceback.format_exc())
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.defer(ephemeral=True)
-                await interaction.followup.send(f"❌ エラー: {repr(e)}", ephemeral=True)
-            except Exception:
-                pass
+            await safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
 
 
 client = MyClient()
@@ -171,6 +216,7 @@ async def reminder_loop(bot: MyClient):
 
     loop = asyncio.get_running_loop()
 
+    # バックオフ中なら何もしない
     if bot._reminder_pause_until and loop.time() < bot._reminder_pause_until:
         return
 
@@ -180,12 +226,23 @@ async def reminder_loop(bot: MyClient):
         bot._reminder_fail_count = 0
         bot._reminder_pause_until = 0.0
 
+    except RuntimeError as e:
+        # ✅ "Session is closed" 系はよく出るので強制バックオフ
+        msg = repr(e)
+        print("reminder_loop RuntimeError:", msg)
+        if "Session is closed" in msg:
+            bot._reminder_fail_count += 1
+            bot._reminder_pause_until = loop.time() + 120
+            return
+        raise
+
     except Exception as e:
         bot._reminder_fail_count += 1
 
         print("reminder_loop error:", repr(e))
         print(traceback.format_exc())
 
+        # 最大10分バックオフ
         backoff = min(600, 60 * (2 ** (bot._reminder_fail_count - 1)))
 
         msg = repr(e)
