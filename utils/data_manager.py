@@ -13,6 +13,38 @@ class DataManager:
     async def _db(self, fn):
         return await asyncio.to_thread(fn)
 
+    # ---------- guild settings (manager role) ----------
+    async def get_manager_role_id(self, guild_id: str):
+        def work():
+            rows = sb.table("guild_settings").select("manager_role_id") \
+                .eq("guild_id", int(guild_id)) \
+                .limit(1) \
+                .execute().data or []
+
+            if not rows:
+                return None
+
+            return rows[0].get("manager_role_id")
+
+        return await self._db(work)
+
+    async def set_manager_role_id(self, guild_id: str, role_id: int | None):
+        def work():
+            sb.table("guild_settings").upsert(
+                {
+                    "guild_id": int(guild_id),
+                    "manager_role_id": role_id,
+                },
+                on_conflict="guild_id"
+            ).execute()
+
+        await self._db(work)
+
+        if role_id is None:
+            return (True, "✅ 管理ロール設定を解除しました（管理者のみ実行可能になります）")
+
+        return (True, "✅ 管理ロールを設定しました（このロール持ちは管理コマンド実行OK）")
+
     # ---------- panels ----------
     async def create_panel(
         self,
