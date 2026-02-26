@@ -107,15 +107,14 @@ class BreakSelectView(discord.ui.View):
 
 
 class PanelView(discord.ui.View):
-    """
-    slot button: panel:slot:<panel_id>:<slot_id>
-    break toggle: panel:breaktoggle:<panel_id>
-    """
     def __init__(self, dm, panel_id: int, buttons: List[Dict]):
         super().__init__(timeout=None)
 
-        # slot buttons (最大25) / 5列
-        for i, b in enumerate(buttons[:25]):
+        # ✅ 休憩ボタンを入れるので、予約ボタンは最大24個にする
+        slot_buttons = buttons[:24]
+
+        # slot buttons / 5列
+        for i, b in enumerate(slot_buttons):
             self.add_item(SlotButton(
                 dm=dm,
                 panel_id=panel_id,
@@ -126,6 +125,7 @@ class PanelView(discord.ui.View):
                 row=i // 5,
             ))
 
-        # 管理者用：休憩切替ボタン
-        row = min(4, (len(buttons[:25]) // 5) + 1)
+        # ✅ 休憩切替ボタン（最後の1枠）
+        # 24個なら row は最大 4 で収まる
+        row = min(4, (len(slot_buttons) // 5))
         self.add_item(BreakToggleButton(dm=dm, panel_id=panel_id, row=row))
