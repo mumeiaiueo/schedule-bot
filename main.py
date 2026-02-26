@@ -57,6 +57,7 @@ class MyClient(discord.Client):
         register_remind(self.tree, self.dm)
         register_notify(self.tree, self.dm)
         register_notify_panel(self.tree, self.dm)
+        register_manager_role(self.tree, self.dm)
 
 
     async def on_ready(self):
