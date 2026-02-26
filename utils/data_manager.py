@@ -370,47 +370,57 @@ class DataManager:
         await self._db(work_update)
         return (True, "休憩にしました" if new_val else "休憩を解除しました")
 
-    # ---------- 3min reminders（管理者管理） ----------
-    async def send_3min_reminders(self, bot: discord.Client):
-        def work_rows():
-            return sb.table("slots").select("*") \
-                .eq("notified", False) \
-                .not_.is_("reserver_user_id", "null") \
-                .execute().data or []
+    # ---------- 3min reminders ----------
+async def send_3min_reminders(self, bot: discord.Client):
+    if bot.is_closed():
+        return  # ← これ追加（超重要）
 
-        rows = await self._db(work_rows)
-        now = jst_now()
+    def work_rows():
+        return sb.table("slots").select("*") \
+            .eq("notified", False) \
+            .not_.is_("reserver_user_id", "null") \
+            .execute().data or []
 
-        for slot in rows:
-            start = from_utc_iso(slot["start_at"])
-            diff = (start - now).total_seconds()
+    rows = await self._db(work_rows)
+    now = jst_now()
 
-            if not (160 <= diff <= 220):
-                continue
+    for slot in rows:
+        if bot.is_closed():
+            return  # ← これも追加
 
-            def work_panel():
-                return sb.table("panels").select("*") \
-                    .eq("id", slot["panel_id"]).execute().data or []
+        start = from_utc_iso(slot["start_at"])
+        diff = (start - now).total_seconds()
 
-            panel_rows = await self._db(work_panel)
-            if not panel_rows:
-                continue
-            panel = panel_rows[0]
+        if not (160 <= diff <= 220):
+            continue
 
-            # ✅ 管理者設定だけ見る（ユーザー設定は一切見ない）
-            if not panel.get("notify_enabled", True):
-                continue
-            if panel.get("notify_paused", False):
-                continue
+        def work_panel():
+            return sb.table("panels").select("*") \
+                .eq("id", slot["panel_id"]).execute().data or []
 
-            notify_ch = bot.get_channel(int(panel["notify_channel_id"]))
-            if not notify_ch:
-                continue
+        panel_rows = await self._db(work_panel)
+        if not panel_rows:
+            continue
+        panel = panel_rows[0]
 
+        if not panel.get("notify_enabled", True):
+            continue
+
+        notify_ch = bot.get_channel(int(panel["notify_channel_id"]))
+        if not notify_ch:
+            continue
+
+        try:
             uid = str(slot["reserver_user_id"])
-            await notify_ch.send(f"⏰ 3分前：{fmt_hm(start)} の枠です <@{uid}>")
+            await notify_ch.send(
+                f"⏰ 3分前：{fmt_hm(start)} の枠です <@{uid}>"
+            )
+        except Exception:
+            continue  # セッション閉じても落ちない
 
-            def work_set_notified():
-                sb.table("slots").update({"notified": True}).eq("id", slot["id"]).execute()
+        def work_set_notified():
+            sb.table("slots").update({"notified": True}).eq("id", slot["id"]).execute()
+
+        await self._db(work_set_notified)
 
             await self._db(work_set_notified)
