@@ -1,17 +1,18 @@
 # bot_interact.py
+print("✅ LOADED bot_interact.py v2026-02-27 split-router")
+
 import asyncio
 import traceback
-from datetime import datetime, timedelta, timezone
-
 import discord
 
-from views.setup_wizard import build_setup_embed, build_setup_view
+
+def _is_admin(interaction: discord.Interaction) -> bool:
+    m = interaction.user
+    return isinstance(m, discord.Member) and m.guild_permissions.administrator
 
 
-JST = timezone(timedelta(hours=9))
-
-
-async def _safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
+async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
+    """3秒制限回避。既に応答済みなら何もしない。"""
     try:
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=ephemeral)
@@ -19,7 +20,8 @@ async def _safe_defer(interaction: discord.Interaction, *, ephemeral: bool = Tru
         pass
 
 
-async def _safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
+async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
+    """二重返信でも落ちない送信。"""
     try:
         if interaction.response.is_done():
             await interaction.followup.send(content, ephemeral=ephemeral)
@@ -29,40 +31,33 @@ async def _safe_send(interaction: discord.Interaction, content: str, *, ephemera
         pass
 
 
-async def _edit_wizard(interaction: discord.Interaction, *, embed: discord.Embed, view: discord.ui.View):
+async def _dispatch_tree(bot, interaction: discord.Interaction):
     """
-    ✅ ここが肝：
-    - ephemeralは message.edit できないことがある
-    - edit_original_response を使うと確実に更新できる
+    ✅ スラッシュコマンド(application_command) を CommandTree に渡す
+    これが無いと “応答なし” になって /setup_channel が死ぬ
     """
     try:
-        # interaction.message がある（通常メッセージ）ならそれを更新
-        if getattr(interaction, "message", None) is not None:
-            await interaction.message.edit(embed=embed, view=view)
-            return
+        res = bot.tree._from_interaction(interaction)  # discord.py内部APIだけど安定動作
+        if asyncio.iscoroutine(res):
+            await res
     except Exception:
-        pass
-
-    # ephemeral はこちら
-    try:
-        await interaction.edit_original_response(embed=embed, view=view)
-    except Exception:
-        pass
+        # tree側の例外はログに出しておく
+        print("tree dispatch error")
+        print(traceback.format_exc())
 
 
 async def handle_interaction(bot, interaction: discord.Interaction):
     try:
-        # 1) スラッシュ等は tree に渡す（sync済みならここが正道）
+        # -------------------------
+        # 1) スラッシュコマンド等
+        # -------------------------
         if interaction.type == discord.InteractionType.application_command:
-            try:
-                res = bot.tree._from_interaction(interaction)
-                if asyncio.iscoroutine(res):
-                    await res
-            except Exception:
-                pass
+            await _dispatch_tree(bot, interaction)
             return
 
-        # 2) component だけ処理
+        # -------------------------
+        # 2) component（ボタン/セレクト）
+        # -------------------------
         if interaction.type != discord.InteractionType.component:
             return
 
@@ -70,19 +65,21 @@ async def handle_interaction(bot, interaction: discord.Interaction):
         custom_id = data.get("custom_id")
         values = data.get("values") or []
 
-        if not isinstance(custom_id, str):
+        if not custom_id or not isinstance(custom_id, str):
             return
 
-        # ✅ 3秒対策：先にdefer
-        await _safe_defer(interaction, ephemeral=True)
+        print("[COMPONENT]", custom_id)
 
-        # --------------------------
-        # パネル予約（既存）
-        # --------------------------
+        # ✅ まずdefer（これが遅いと“応答なし”になりやすい）
+        await safe_defer(interaction, ephemeral=True)
+
+        # -------------------------
+        # panel:slot:<panel_id>:<slot_id>
+        # -------------------------
         if custom_id.startswith("panel:slot:"):
             parts = custom_id.split(":")
             if len(parts) != 4:
-                await _safe_send(interaction, "❌ ボタン形式が不正です")
+                await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
                 return
 
             panel_id = int(parts[2])
@@ -95,114 +92,72 @@ async def handle_interaction(bot, interaction: discord.Interaction):
             )
 
             await bot.dm.render_panel(bot, panel_id)
-            await _safe_send(interaction, msg, ephemeral=True)
+            await safe_send(interaction, msg, ephemeral=True)
             return
 
-        # --------------------------
-        # setupウィザード（今回の本命）
-        # --------------------------
-        if custom_id.startswith("setup:"):
-            st = bot.get_setup_state(interaction.user.id)
-
-            if custom_id == "setup:day:today":
-                st["day"] = "today"
-            elif custom_id == "setup:day:tomorrow":
-                st["day"] = "tomorrow"
-
-            elif custom_id == "setup:start_hour" and values:
-                st["start_hour"] = str(values[0])
-            elif custom_id == "setup:start_min" and values:
-                st["start_min"] = str(values[0])
-            elif custom_id == "setup:end_hour" and values:
-                st["end_hour"] = str(values[0])
-            elif custom_id == "setup:end_min" and values:
-                st["end_min"] = str(values[0])
-
-            elif custom_id.startswith("setup:interval:"):
-                st["interval"] = int(custom_id.split(":")[-1])
-
-            elif custom_id == "setup:notify_channel" and values:
-                st["notify_channel_id"] = str(values[0])
-
-            elif custom_id == "setup:everyone:toggle":
-                st["everyone"] = not bool(st.get("everyone"))
-
-            elif custom_id == "setup:title:clear":
-                st["title"] = None
-
-            elif custom_id == "setup:create":
-                # 必須チェック
-                missing = []
-                if not st.get("day"): missing.append("今日/明日")
-                if not (st.get("start_hour") and st.get("start_min")): missing.append("開始時刻")
-                if not (st.get("end_hour") and st.get("end_min")): missing.append("終了時刻")
-                if not st.get("interval"): missing.append("間隔(20/25/30)")
-                if not st.get("notify_channel_id"): missing.append("通知チャンネル")
-
-                if missing:
-                    await _safe_send(interaction, "❌ 未入力: " + " / ".join(missing), ephemeral=True)
-                    embed = build_setup_embed(st)
-                    view = build_setup_view(st)
-                    await _edit_wizard(interaction, embed=embed, view=view)
-                    return
-
-                # 日付決定
-                today = datetime.now(JST).date()
-                day = today if st["day"] == "today" else (today + timedelta(days=1))
-
-                sh = int(st["start_hour"]); sm = int(st["start_min"])
-                eh = int(st["end_hour"]); em = int(st["end_min"])
-
-                start_at = datetime(day.year, day.month, day.day, sh, sm, tzinfo=JST)
-                end_at = datetime(day.year, day.month, day.day, eh, em, tzinfo=JST)
-                if end_at <= start_at:
-                    end_at += timedelta(days=1)
-
-                # everyone付けたいならタイトルに埋め込む（通知処理側で使う想定）
-                title = st.get("title")
-                if st.get("everyone"):
-                    if title:
-                        title = f"@everyone {title}"
-                    else:
-                        title = "@everyone"
-
-                res = await bot.dm.create_panel(
-                    guild_id=str(interaction.guild_id),
-                    channel_id=str(interaction.channel_id),
-                    day_date=day,
-                    title=title,
-                    start_at=start_at,
-                    end_at=end_at,
-                    interval_minutes=int(st["interval"]),
-                    notify_channel_id=str(st["notify_channel_id"]),
-                    created_by=str(interaction.user.id),
-                )
-
-                if not res.get("ok"):
-                    await _safe_send(interaction, f"❌ 作成失敗: {res.get('error','unknown')}", ephemeral=True)
-                    embed = build_setup_embed(st)
-                    view = build_setup_view(st)
-                    await _edit_wizard(interaction, embed=embed, view=view)
-                    return
-
-                await bot.dm.render_panel(bot, int(res["panel_id"]))
-                bot.clear_setup_state(interaction.user.id)
-
-                # ✅ ウィザードは完了表示に更新（ephemeralでも確実に編集）
-                done_embed = discord.Embed(title="✅ 作成完了", description="パネルを作成しました！", color=0x2ECC71)
-                await _edit_wizard(interaction, embed=done_embed, view=discord.ui.View())
+        # -------------------------
+        # panel:breaktoggle:<panel_id>
+        # -------------------------
+        if custom_id.startswith("panel:breaktoggle:"):
+            if not _is_admin(interaction):
+                await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
                 return
 
-            # 通常の更新
-            embed = build_setup_embed(st)
-            view = build_setup_view(st)
-            await _edit_wizard(interaction, embed=embed, view=view)
+            parts = custom_id.split(":")
+            if len(parts) != 3:
+                await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
+                return
+
+            panel_id = int(parts[2])
+            view = await bot.dm.build_break_select_view(panel_id)
+
+            try:
+                await interaction.followup.send(
+                    "⌚️ 休憩にする/解除する時間を選んでね👇",
+                    view=view,
+                    ephemeral=True,
+                )
+            except Exception:
+                await safe_send(interaction, "❌ 表示に失敗しました（もう一度押して）", ephemeral=True)
             return
 
-        # 想定外
-        await _safe_send(interaction, f"unknown custom_id: {custom_id}", ephemeral=True)
+        # -------------------------
+        # panel:breakselect:<panel_id>
+        # -------------------------
+        if custom_id.startswith("panel:breakselect:"):
+            if not _is_admin(interaction):
+                await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+                return
+
+            parts = custom_id.split(":")
+            if len(parts) != 3:
+                await safe_send(interaction, "❌ セレクト形式が不正です", ephemeral=True)
+                return
+
+            panel_id = int(parts[2])
+            if not values:
+                await safe_send(interaction, "❌ 選択値が取得できませんでした", ephemeral=True)
+                return
+
+            slot_id = int(values[0])
+
+            ok, msg = await bot.dm.toggle_break_slot(panel_id, slot_id)
+            await bot.dm.render_panel(bot, panel_id)
+            await safe_send(interaction, msg, ephemeral=True)
+            return
+
+        # -------------------------
+        # setup ウィザード系（もし views/setup_wizard を使うならここに追加）
+        # ※いまは “応答なし” を止めるのが最優先なので、
+        #   setup_wizard の custom_id 処理は「次」に回してOK
+        # -------------------------
+
+        await safe_send(interaction, f"unknown custom_id: {custom_id}", ephemeral=True)
 
     except Exception as e:
         print("handle_interaction error:", repr(e))
         print(traceback.format_exc())
-        await _safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
+        try:
+            await safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
+        except Exception:
+            pass
