@@ -1,5 +1,5 @@
 # utils/data_manager.py
-print("✅ LOADED data_manager.py v2026-02-27 FIXED (FULL COPY)")
+print("✅ LOADED data_manager.py v2026-02-27 STABLE")
 
 import asyncio
 from datetime import timedelta
@@ -11,33 +11,12 @@ from views.panel_view import PanelView, BreakSelectView, build_panel_embed
 
 
 class DataManager:
-    # --- Supabase(同期)を別スレッドで回す ---
     async def _db(self, fn):
         return await asyncio.to_thread(fn)
 
     def _require_db(self):
         if sb is None:
             raise RuntimeError("Supabaseが未接続です（SUPABASE_URL/KEY or DNS を確認）")
-
-    # ---------- setup wizard state ----------
-    def get_or_init_setup_state(self, state_dict: dict[int, dict], user_id: int) -> dict:
-        st = state_dict.get(user_id)
-        if st is None:
-            st = {
-                "day": None,
-                "start_hour": None,
-                "start_min": None,
-                "end_hour": None,
-                "end_min": None,
-                "start": None,
-                "end": None,
-                "interval": None,
-                "notify_channel_id": None,
-                "everyone": False,
-                "title": None,
-            }
-            state_dict[user_id] = st
-        return st
 
     # ---------- guild settings (manager role) ----------
     async def get_manager_role_id(self, guild_id: str):
@@ -94,33 +73,51 @@ class DataManager:
     ):
         self._require_db()
 
-        # panels作成
-        try:
-            def work_insert_panel():
-                return sb.table("panels").insert({
-                    "guild_id": guild_id,
-                    "channel_id": channel_id,
-                    "day": str(day_date),
-                    "title": title,
-                    "start_at": to_utc_iso(start_at),
-                    "end_at": to_utc_iso(end_at),
-                    "interval_minutes": int(interval_minutes),
-                    "notify_channel_id": notify_channel_id,
-                    "created_by": created_by,
-
-                    "mention_everyone": bool(mention_everyone),
-
-                    # 管理者管理の通知フラグ
-                    "notify_enabled": True,
-                    "notify_paused": False,
-                }).execute().data
-
-            panel = await self._db(work_insert_panel)
-        except Exception:
-            return {
-                "ok": False,
-                "error": "このチャンネルでは、その時間帯に既に募集があります（時間が重なる募集は作れません）。作り直すなら /reset_channel を先に実行してね。"
+        # panels作成（mention_everyone は列が無い環境でも落ちないように try）
+        def work_insert_panel():
+            payload = {
+                "guild_id": guild_id,
+                "channel_id": channel_id,
+                "day": str(day_date),
+                "title": title,
+                "start_at": to_utc_iso(start_at),
+                "end_at": to_utc_iso(end_at),
+                "interval_minutes": int(interval_minutes),
+                "notify_channel_id": notify_channel_id,
+                "created_by": created_by,
+                "notify_enabled": True,
+                "notify_paused": False,
             }
+            # 列が無いとエラーになるので、安全に入れる
+            payload["mention_everyone"] = bool(mention_everyone)
+            return sb.table("panels").insert(payload).execute().data
+
+        try:
+            panel = await self._db(work_insert_panel)
+        except Exception as e:
+            # mention_everyone 列が無い場合のフォールバック（その列を抜いて再挑戦）
+            try:
+                def work_insert_panel_fallback():
+                    payload = {
+                        "guild_id": guild_id,
+                        "channel_id": channel_id,
+                        "day": str(day_date),
+                        "title": title,
+                        "start_at": to_utc_iso(start_at),
+                        "end_at": to_utc_iso(end_at),
+                        "interval_minutes": int(interval_minutes),
+                        "notify_channel_id": notify_channel_id,
+                        "created_by": created_by,
+                        "notify_enabled": True,
+                        "notify_paused": False,
+                    }
+                    return sb.table("panels").insert(payload).execute().data
+                panel = await self._db(work_insert_panel_fallback)
+            except Exception:
+                return {
+                    "ok": False,
+                    "error": "このチャンネルでは、その時間帯に既に募集があります（時間が重なる募集は作れません）。作り直すなら /reset_channel を先に実行してね。",
+                }
 
         if not panel:
             return {"ok": False, "error": "作成に失敗しました"}
@@ -167,6 +164,81 @@ class DataManager:
             return len(panel_ids) > 0
 
         return await self._db(work)
+
+    async def delete_panel_by_channel_day(self, guild_id: str, channel_id: str, day_date) -> bool:
+        self._require_db()
+
+        def work_select():
+            return sb.table("panels").select("id") \
+                .eq("guild_id", guild_id).eq("channel_id", channel_id).eq("day", str(day_date)) \
+                .order("start_at").execute().data or []
+
+        rows = await self._db(work_select)
+        if not rows:
+            return False
+
+        panel_ids = [r["id"] for r in rows]
+
+        def work_delete():
+            sb.table("slots").delete().in_("panel_id", panel_ids).execute()
+            sb.table("panels").delete().in_("id", panel_ids).execute()
+
+        await self._db(work_delete)
+        return True
+
+    async def update_notify_channel_for_channel_day(self, guild_id: str, channel_id: str, day_date, notify_channel_id: str) -> bool:
+        self._require_db()
+
+        def work_select():
+            return sb.table("panels").select("id") \
+                .eq("guild_id", guild_id).eq("channel_id", channel_id).eq("day", str(day_date)) \
+                .order("start_at").execute().data or []
+
+        rows = await self._db(work_select)
+        if not rows:
+            return False
+
+        def work_update():
+            for r in rows:
+                sb.table("panels").update({"notify_channel_id": notify_channel_id}).eq("id", r["id"]).execute()
+
+        await self._db(work_update)
+        return True
+
+    async def set_panel_notify_state(self, guild_id: str, channel_id: str, day_date, mode: str):
+        self._require_db()
+
+        def work_select():
+            return sb.table("panels").select("id,notify_enabled,notify_paused") \
+                .eq("guild_id", guild_id).eq("channel_id", channel_id).eq("day", str(day_date)) \
+                .order("start_at").limit(1).execute().data or []
+
+        rows = await self._db(work_select)
+        if not rows:
+            return (False, "今日のパネルが見つかりません（/setup_channel してね）")
+
+        pid = rows[0]["id"]
+
+        if mode == "on":
+            patch = {"notify_enabled": True, "notify_paused": False}
+            text = "✅ 通知を ON にしました"
+        elif mode == "off":
+            patch = {"notify_enabled": False}
+            text = "✅ 通知を OFF にしました"
+        elif mode == "pause":
+            patch = {"notify_paused": True}
+            text = "✅ 通知を一時停止しました"
+        elif mode == "resume":
+            patch = {"notify_paused": False}
+            text = "✅ 一時停止を解除しました"
+        else:
+            return (False, "mode が不正です")
+
+        def work_update():
+            sb.table("panels").update(patch).eq("id", pid).execute()
+
+        await self._db(work_update)
+        return (True, text)
 
     # ---------- UI render ----------
     async def render_panel(self, bot: discord.Client, panel_id: int):
@@ -223,7 +295,7 @@ class DataManager:
         day_text = f"📅 {panel['day']}（JST） / interval {panel['interval_minutes']}min"
         title = panel.get("title") or "募集パネル"
         embed = build_panel_embed(title, day_text, lines)
-        view = PanelView(self, panel_id, buttons)  # B方式 view
+        view = PanelView(self, panel_id, buttons)
 
         mid = panel.get("panel_message_id")
         if mid:
@@ -337,11 +409,11 @@ class DataManager:
         await self._db(work_update)
         return (True, "休憩にしました" if new_val else "休憩を解除しました")
 
-    # ---------- 3min reminders ----------
+    # ---------- 3min reminders（安定・1回だけ通知） ----------
     async def send_3min_reminders(self, bot):
         self._require_db()
 
-        # bot落下中なら何もしない
+        # botが死にかけの時は何もしない
         try:
             if bot.is_closed() or (hasattr(bot, "is_ready") and not bot.is_ready()):
                 return
@@ -351,7 +423,7 @@ class DataManager:
         def work_rows():
             return (
                 sb.table("slots")
-                .select("*")
+                .select("id,panel_id,start_at,reserver_user_id,notified")
                 .eq("notified", False)
                 .not_.is_("reserver_user_id", "null")
                 .execute()
@@ -359,55 +431,48 @@ class DataManager:
                 or []
             )
 
-        rows = await self._db(work_rows)
+        try:
+            rows = await self._db(work_rows)
+        except Exception as e:
+            print("reminder DB error:", e)
+            return
+
         now = jst_now()
 
-        # 3分前（誤差吸収）
         for slot in rows:
-            # 途中で落ちた/再起動中なら終了
             try:
-                if bot.is_closed() or (hasattr(bot, "is_ready") and not bot.is_ready()):
-                    return
-            except Exception:
-                return
+                start = from_utc_iso(slot["start_at"])
+                diff = (start - now).total_seconds()
+                # 3分前（誤差吸収）
+                if not (160 <= diff <= 220):
+                    continue
 
-            start = from_utc_iso(slot["start_at"])
-            diff = (start - now).total_seconds()
-            if not (160 <= diff <= 220):
-                continue
+                # パネル取得（通知チャンネル・everyOne判定）
+                def work_panel():
+                    return sb.table("panels").select("notify_channel_id,notify_enabled,notify_paused,mention_everyone") \
+                        .eq("id", slot["panel_id"]).limit(1).execute().data or []
+                panel_rows = await self._db(work_panel)
+                if not panel_rows:
+                    continue
+                panel = panel_rows[0]
 
-            # panelを見て通知先/設定を確認
-            def work_panel():
-                return sb.table("panels").select("*").eq("id", slot["panel_id"]).execute().data or []
+                if not panel.get("notify_enabled", True):
+                    continue
+                if panel.get("notify_paused", False):
+                    continue
 
-            panel_rows = await self._db(work_panel)
-            if not panel_rows:
-                continue
-            panel = panel_rows[0]
+                notify_ch = bot.get_channel(int(panel["notify_channel_id"]))
+                if not notify_ch:
+                    continue
 
-            if not panel.get("notify_enabled", True):
-                continue
-            if panel.get("notify_paused", False):
-                continue
+                uid = str(slot["reserver_user_id"])
+                prefix = "@everyone " if bool(panel.get("mention_everyone", False)) else ""
+                await notify_ch.send(f"{prefix}⏰ 3分前：{fmt_hm(start)} の枠です <@{uid}>")
 
-            notify_ch = bot.get_channel(int(panel["notify_channel_id"]))
-            if not notify_ch:
-                continue
+                def mark_notified():
+                    sb.table("slots").update({"notified": True}).eq("id", slot["id"]).execute()
+                await self._db(mark_notified)
 
-            uid = str(slot["reserver_user_id"])
-            mention = f"<@{uid}>"
-            if panel.get("mention_everyone"):
-                mention = f"@everyone {mention}"
-
-            try:
-                await notify_ch.send(f"⏰ 3分前：{fmt_hm(start)} の枠です {mention}")
-            except Exception:
-                continue
-
-            def work_set_notified():
-                sb.table("slots").update({"notified": True}).eq("id", slot["id"]).execute()
-
-            try:
-                await self._db(work_set_notified)
-            except Exception:
+            except Exception as e:
+                print("reminder send error:", e)
                 continue
