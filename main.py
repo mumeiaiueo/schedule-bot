@@ -198,7 +198,9 @@ class MyClient(discord.Client):
                 return
 
             # 2) スラッシュコマンド等（discord.py が処理）
-            await self.tree.process_interaction(interaction)
+            if interaction.type == discord.InteractionType.application_command:
+    await self.tree._from_interaction(interaction)
+    return
 
         except Exception as e:
             print("on_interaction error:", repr(e))
