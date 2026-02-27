@@ -373,7 +373,7 @@ class DataManager:
     # ---------- 3min reminders ----------
 async def send_3min_reminders(self, bot: discord.Client):
     if bot.is_closed():
-        return  # ← これ追加（超重要）
+        return  # Bot終了中なら何もしない
 
     def work_rows():
         return sb.table("slots").select("*") \
@@ -386,7 +386,7 @@ async def send_3min_reminders(self, bot: discord.Client):
 
     for slot in rows:
         if bot.is_closed():
-            return  # ← これも追加
+            return
 
         start = from_utc_iso(slot["start_at"])
         diff = (start - now).total_seconds()
@@ -396,11 +396,13 @@ async def send_3min_reminders(self, bot: discord.Client):
 
         def work_panel():
             return sb.table("panels").select("*") \
-                .eq("id", slot["panel_id"]).execute().data or []
+                .eq("id", slot["panel_id"]) \
+                .execute().data or []
 
         panel_rows = await self._db(work_panel)
         if not panel_rows:
             continue
+
         panel = panel_rows[0]
 
         if not panel.get("notify_enabled", True):
@@ -419,8 +421,9 @@ async def send_3min_reminders(self, bot: discord.Client):
             continue  # セッション閉じても落ちない
 
         def work_set_notified():
-            sb.table("slots").update({"notified": True}).eq("id", slot["id"]).execute()
+            sb.table("slots") \
+                .update({"notified": True}) \
+                .eq("id", slot["id"]) \
+                .execute()
 
         await self._db(work_set_notified)
-
-            await self._db(work_set_notified)
