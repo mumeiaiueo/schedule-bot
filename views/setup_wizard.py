@@ -1,4 +1,4 @@
-# views/setup_wizard.py
+# views/setup_wizard.py  (discord.py 2.x 対応 / ActionRow 不使用)
 import discord
 
 HOURS = [f"{h:02d}" for h in range(0, 24)]
@@ -25,7 +25,10 @@ def build_setup_embed(st: dict) -> discord.Embed:
     everyone = "ON" if st.get("everyone") else "OFF"
     title = st.get("title") or "（なし）"
 
-    e = discord.Embed(title="🧩 枠作成ウィザード", description="ボタンとセレクトで選んでね（必須が全部そろうと作成できる）")
+    e = discord.Embed(
+        title="🧩 枠作成ウィザード",
+        description="ボタン/セレクトで選んでね（必須が揃うと作成できます）",
+    )
     e.add_field(name="📅 今日/明日（必須）", value=day_txt, inline=False)
     e.add_field(name="🕒 開始（必須）", value=_val_or_dash(start), inline=True)
     e.add_field(name="🕘 終了（必須）", value=_val_or_dash(end), inline=True)
@@ -64,79 +67,72 @@ class TitleModal(discord.ui.Modal, title="タイトル入力（任意）"):
 def build_setup_view(st: dict) -> discord.ui.View:
     v = discord.ui.View(timeout=300)
 
-    # --- 今日/明日 ---
-    row1 = discord.ui.ActionRow(
-        discord.ui.Button(label="今日", style=discord.ButtonStyle.primary, custom_id="setup:day:today"),
-        discord.ui.Button(label="明日", style=discord.ButtonStyle.secondary, custom_id="setup:day:tomorrow"),
-    )
-    v.add_item(row1)
+    # --- 今日/明日 (row 0) ---
+    v.add_item(discord.ui.Button(label="今日", style=discord.ButtonStyle.primary, custom_id="setup:day:today", row=0))
+    v.add_item(discord.ui.Button(label="明日", style=discord.ButtonStyle.secondary, custom_id="setup:day:tomorrow", row=0))
 
-    # --- 開始 時/分 ---
-    start_hour = discord.ui.Select(
+    # --- 開始 (row 1,2) ---
+    v.add_item(discord.ui.Select(
         placeholder="開始: 時",
         custom_id="setup:start_hour",
         options=[discord.SelectOption(label=h, value=h) for h in HOURS],
-        min_values=1, max_values=1
-    )
-    start_min = discord.ui.Select(
+        min_values=1, max_values=1,
+        row=1,
+    ))
+    v.add_item(discord.ui.Select(
         placeholder="開始: 分（5分刻み）",
         custom_id="setup:start_min",
         options=[discord.SelectOption(label=m, value=m) for m in MINS_5],
-        min_values=1, max_values=1
-    )
-    v.add_item(start_hour)
-    v.add_item(start_min)
+        min_values=1, max_values=1,
+        row=2,
+    ))
 
-    # --- 終了 時/分 ---
-    end_hour = discord.ui.Select(
+    # --- 終了 (row 3,4) ---
+    v.add_item(discord.ui.Select(
         placeholder="終了: 時",
         custom_id="setup:end_hour",
         options=[discord.SelectOption(label=h, value=h) for h in HOURS],
-        min_values=1, max_values=1
-    )
-    end_min = discord.ui.Select(
+        min_values=1, max_values=1,
+        row=3,
+    ))
+    v.add_item(discord.ui.Select(
         placeholder="終了: 分（5分刻み）",
         custom_id="setup:end_min",
         options=[discord.SelectOption(label=m, value=m) for m in MINS_5],
-        min_values=1, max_values=1
-    )
-    v.add_item(end_hour)
-    v.add_item(end_min)
+        min_values=1, max_values=1,
+        row=4,
+    ))
 
-    # --- 間隔 ---
-    row2 = discord.ui.ActionRow(
-        discord.ui.Button(label="20分", style=discord.ButtonStyle.success, custom_id="setup:interval:20"),
-        discord.ui.Button(label="25分", style=discord.ButtonStyle.success, custom_id="setup:interval:25"),
-        discord.ui.Button(label="30分", style=discord.ButtonStyle.success, custom_id="setup:interval:30"),
-    )
-    v.add_item(row2)
+    # --- 間隔 (row 5) ---
+    v.add_item(discord.ui.Button(label="20分", style=discord.ButtonStyle.success, custom_id="setup:interval:20", row=5))
+    v.add_item(discord.ui.Button(label="25分", style=discord.ButtonStyle.success, custom_id="setup:interval:25", row=5))
+    v.add_item(discord.ui.Button(label="30分", style=discord.ButtonStyle.success, custom_id="setup:interval:30", row=5))
 
-    # --- 通知チャンネル（必須）---
-    # ChannelSelect が使えるdiscord.pyならこれが一番ラク
+    # --- 通知チャンネル (row 6) ---
+    # ChannelSelect は discord.py のバージョンで無いことがあるので try
     try:
-        chan_select = discord.ui.ChannelSelect(
+        v.add_item(discord.ui.ChannelSelect(
             placeholder="3分前通知チャンネル（必須）",
             custom_id="setup:notify_channel",
             channel_types=[discord.ChannelType.text],
             min_values=1, max_values=1,
-        )
-        v.add_item(chan_select)
+            row=6,
+        ))
     except Exception:
-        # 環境が古い場合は出せないので、ボタンだけ出す（ただし古いと動かない）
-        pass
+        # もし無ければ、ここは「コマンドで設定」にする必要がある（後で対応）
+        v.add_item(discord.ui.Button(
+            label="⚠️通知チャンネル選択が未対応（discord.py更新必要）",
+            style=discord.ButtonStyle.secondary,
+            custom_id="setup:notify_channel_unavailable",
+            row=6
+        ))
 
-    # --- 任意：everyone / タイトル ---
-    row3 = discord.ui.ActionRow(
-        discord.ui.Button(label="everyone切替（任意）", style=discord.ButtonStyle.secondary, custom_id="setup:everyone:toggle"),
-        discord.ui.Button(label="タイトル入力（任意）", style=discord.ButtonStyle.secondary, custom_id="setup:title:open"),
-    )
-    v.add_item(row3)
+    # --- 任意 (row 7) ---
+    v.add_item(discord.ui.Button(label="everyone切替（任意）", style=discord.ButtonStyle.secondary, custom_id="setup:everyone:toggle", row=7))
+    v.add_item(discord.ui.Button(label="タイトル入力（任意）", style=discord.ButtonStyle.secondary, custom_id="setup:title:open", row=7))
 
-    # --- 作成 / キャンセル ---
-    row4 = discord.ui.ActionRow(
-        discord.ui.Button(label="✅ 作成", style=discord.ButtonStyle.primary, custom_id="setup:create"),
-        discord.ui.Button(label="✖ キャンセル", style=discord.ButtonStyle.danger, custom_id="setup:cancel"),
-    )
-    v.add_item(row4)
+    # --- 作成/キャンセル (row 8) ---
+    v.add_item(discord.ui.Button(label="✅ 作成", style=discord.ButtonStyle.primary, custom_id="setup:create", row=8))
+    v.add_item(discord.ui.Button(label="✖ キャンセル", style=discord.ButtonStyle.danger, custom_id="setup:cancel", row=8))
 
     return v
