@@ -2,30 +2,47 @@
 import discord
 from discord import app_commands
 
-from utils.discord_utils import safe_send, safe_defer
-
-def _is_admin_only(interaction: discord.Interaction) -> bool:
-    u = interaction.user
-    return isinstance(u, discord.Member) and u.guild_permissions.administrator
-
 def register(tree: app_commands.CommandTree, dm):
-    @tree.command(name="set_manager_role", description="管理コマンドを使えるロールを設定（管理者のみ）")
-    @app_commands.describe(role="管理ロール（例: @予約管理）")
-    async def set_manager_role(interaction: discord.Interaction, role: discord.Role):
-        if not _is_admin_only(interaction):
-            await safe_send(interaction, "❌ このコマンドはサーバー管理者のみ実行できます", ephemeral=True)
+    @tree.command(name="set_manager_role", description="管理ロールを設定/解除します（管理者のみ）")
+    @app_commands.describe(role="管理ロール（解除する場合は未指定）")
+    async def set_manager_role(interaction: discord.Interaction, role: discord.Role | None = None):
+        # ✅ まず defer（これがないと“考え中”で止まりやすい）
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except Exception:
+            pass
+
+        # ✅ 管理者チェック（ここも defer 後にやると安全）
+        m = interaction.user
+        if not isinstance(m, discord.Member) or not m.guild_permissions.administrator:
+            try:
+                await interaction.followup.send("❌ 管理者のみ実行できます", ephemeral=True)
+            except Exception:
+                pass
             return
 
-        await safe_defer(interaction, ephemeral=True, thinking=True)
-        ok, msg = await dm.set_manager_role_id(str(interaction.guild_id), int(role.id))
-        await safe_send(interaction, msg, ephemeral=True)
-
-    @tree.command(name="clear_manager_role", description="管理ロール設定を解除（管理者のみ）")
-    async def clear_manager_role(interaction: discord.Interaction):
-        if not _is_admin_only(interaction):
-            await safe_send(interaction, "❌ このコマンドはサーバー管理者のみ実行できます", ephemeral=True)
+        if not interaction.guild_id:
+            try:
+                await interaction.followup.send("❌ サーバー内で実行してね", ephemeral=True)
+            except Exception:
+                pass
             return
 
-        await safe_defer(interaction, ephemeral=True, thinking=True)
-        ok, msg = await dm.set_manager_role_id(str(interaction.guild_id), None)
-        await safe_send(interaction, msg, ephemeral=True)
+        # ✅ 設定/解除
+        try:
+            ok, msg = await dm.set_manager_role_id(
+                guild_id=str(interaction.guild_id),
+                role_id=(int(role.id) if role else None),
+            )
+        except Exception as e:
+            try:
+                await interaction.followup.send(f"❌ DBエラー: {repr(e)}", ephemeral=True)
+            except Exception:
+                pass
+            return
+
+        # ✅ 最後に必ず返す（ここが無いと“考え中”のまま）
+        try:
+            await interaction.followup.send(msg, ephemeral=True)
+        except Exception:
+            pass
