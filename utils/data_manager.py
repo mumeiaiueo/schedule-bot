@@ -1,4 +1,4 @@
-# utils/data_manager.py
+print("✅ LOADED data_manager.py v2026-02-27")
 import asyncio
 from datetime import timedelta
 import discord
