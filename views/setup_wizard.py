@@ -1,205 +1,123 @@
 # views/setup_wizard.py
 import discord
-from datetime import datetime, timedelta, timezone
 
-JST = timezone(timedelta(hours=9))
-
-
-def _fmt(st: dict) -> str:
-    day = st.get("day") or "未選択"
-    start = st.get("start") or "未選択"
-    end = st.get("end") or "未選択"
-    interval = st.get("interval") or "未選択"
-    ch = st.get("notify_channel_id")
-    chtxt = f"<#{ch}>" if ch else "未選択"
-    everyone = "ON" if st.get("everyone") else "OFF"
-    title = st.get("title") or "（なし）"
-    page = st.get("page", 1)
-
-    return (
-        f"**ページ**: {page}/2\n"
-        f"**日付**: {day}\n"
-        f"**開始**: {start}\n"
-        f"**終了**: {end}\n"
-        f"**間隔**: {interval}\n"
-        f"**通知チャンネル**: {chtxt}\n"
-        f"**@everyone**: {everyone}\n"
-        f"**タイトル**: {title}\n"
-    )
+# 5分刻み
+MIN_OPTIONS = [f"{m:02d}" for m in range(0, 60, 5)]
+HOUR_OPTIONS = [f"{h:02d}" for h in range(0, 24)]
 
 
 def build_setup_embed(st: dict) -> discord.Embed:
-    e = discord.Embed(
-        title="🧩 募集パネル作成（ウィザード）",
-        description=_fmt(st),
+    def t(v, fallback="未設定"):
+        return v if v else fallback
+
+    day = "今日" if st.get("day") == "today" else ("明日" if st.get("day") == "tomorrow" else "未設定")
+    start = f"{t(st.get('start_hour'),'--')}:{t(st.get('start_min'),'--')}"
+    end = f"{t(st.get('end_hour'),'--')}:{t(st.get('end_min'),'--')}"
+    interval = st.get("interval")
+    notify = st.get("notify_channel_id")
+    everyone = "ON" if st.get("everyone") else "OFF"
+    title = st.get("title") or "(なし)"
+
+    desc = (
+        f"**日付**：{day}\n"
+        f"**開始**：{start}\n"
+        f"**終了**：{end}\n"
+        f"**間隔**：{interval if interval else '未設定'}\n"
+        f"**通知チャンネル**：{f'<#{notify}>' if notify else '未設定'}\n"
+        f"**@everyone**：{everyone}\n"
+        f"**タイトル**：{title}\n\n"
+        "全部選んだら **作成** を押してね👇"
     )
-    e.set_footer(text="※ row制限対策済み（0〜4のみ使用）")
-    return e
+    return discord.Embed(title="🧩 枠作成ウィザード", description=desc, color=0x5865F2)
 
 
-def _hour_options():
-    opts = []
-    for h in range(0, 24):
-        opts.append(discord.SelectOption(label=f"{h:02d}", value=f"{h:02d}"))
-    return opts  # 24 <= 25 OK
-
-
-def _min_options():
-    opts = []
-    for m in range(0, 60, 5):
-        opts.append(discord.SelectOption(label=f"{m:02d}", value=f"{m:02d}"))
-    return opts  # 12 <= 25 OK
-
-
-class _IntervalSelect(discord.ui.Select):
-    def __init__(self):
-        super().__init__(
-            placeholder="間隔を選んで（必須）",
-            min_values=1,
-            max_values=1,
-            options=[
-                discord.SelectOption(label="20分", value="20"),
-                discord.SelectOption(label="25分", value="25"),
-                discord.SelectOption(label="30分", value="30"),
-            ],
-            custom_id="setup:interval",
-            row=0,  # ✅ row固定
-        )
-
-
-class _HourSelect(discord.ui.Select):
-    def __init__(self, custom_id: str, placeholder: str, row: int):
-        super().__init__(
-            placeholder=placeholder,
-            min_values=1,
-            max_values=1,
-            options=_hour_options(),
-            custom_id=custom_id,
-            row=row,  # ✅ row固定
-        )
-
-
-class _MinSelect(discord.ui.Select):
-    def __init__(self, custom_id: str, placeholder: str, row: int):
-        super().__init__(
-            placeholder=placeholder,
-            min_values=1,
-            max_values=1,
-            options=_min_options(),
-            custom_id=custom_id,
-            row=row,  # ✅ row固定
-        )
-
-
-class _DayToday(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="今日", style=discord.ButtonStyle.primary, custom_id="setup:day:today", row=0)
-
-
-class _DayTomorrow(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="明日", style=discord.ButtonStyle.primary, custom_id="setup:day:tomorrow", row=0)
-
-
-class _EveryoneToggle(discord.ui.Button):
-    def __init__(self, on: bool):
-        super().__init__(
-            label=f"@everyone: {'ON' if on else 'OFF'}",
-            style=discord.ButtonStyle.secondary,
-            custom_id="setup:everyone:toggle",
-            row=0,
-        )
-
-
-class _Next(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="次へ ▶", style=discord.ButtonStyle.success, custom_id="setup:page:next", row=0)
-
-
-class _Back(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="◀ 戻る", style=discord.ButtonStyle.secondary, custom_id="setup:page:back", row=2)
-
-
-class _Create(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="✅ 作成", style=discord.ButtonStyle.success, custom_id="setup:create", row=2)
-
-
-class _Cancel(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="✖ キャンセル", style=discord.ButtonStyle.danger, custom_id="setup:cancel", row=2)
-
-
-class _NotifyChannelSelect(discord.ui.ChannelSelect):
-    def __init__(self):
-        super().__init__(
-            channel_types=[discord.ChannelType.text],
-            placeholder="3分前通知を送るチャンネル（必須）",
-            min_values=1,
-            max_values=1,
-            custom_id="setup:notify_channel",
-            row=0,  # ✅ row固定
-        )
-
-
-class _TitleModalButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="タイトル入力（任意）", style=discord.ButtonStyle.secondary, custom_id="setup:title:open", row=1)
-
-
-class TitleModal(discord.ui.Modal, title="募集タイトル（任意）"):
-    title_text = discord.ui.TextInput(
-        label="タイトル（空でもOK）",
-        required=False,
-        max_length=80,
-        placeholder="例）夜の募集 / 周回 / 作業枠 など",
-    )
+class TitleModal(discord.ui.Modal, title="タイトル入力（任意）"):
+    text = discord.ui.TextInput(label="タイトル", required=False, max_length=50, placeholder="例：夜の募集")
 
     def __init__(self, st: dict):
         super().__init__()
-        self._st = st
+        self.st = st
 
     async def on_submit(self, interaction: discord.Interaction):
-        t = str(self.title_text.value or "").strip()
-        self._st["title"] = t or None
-        await interaction.response.send_message("✅ タイトルを保存しました", ephemeral=True)
-
-
-class SetupWizardView(discord.ui.View):
-    def __init__(self, st: dict):
-        super().__init__(timeout=None)
-        page = int(st.get("page", 1))
-
-        # ページ1（時間・日付・間隔）
-        if page == 1:
-            # row0: 今日/明日 + 間隔Select + everyone + 次へ で 5個以内
-            self.add_item(_DayToday())
-            self.add_item(_DayTomorrow())
-            self.add_item(_IntervalSelect())
-            self.add_item(_EveryoneToggle(bool(st.get("everyone"))))
-            self.add_item(_Next())
-
-            # row1〜4: 時間（hour/min を分割）
-            self.add_item(_HourSelect("setup:start_hour", "開始：時（必須）", row=1))
-            self.add_item(_MinSelect("setup:start_min", "開始：分（5分刻み・必須）", row=2))
-            self.add_item(_HourSelect("setup:end_hour", "終了：時（必須）", row=3))
-            self.add_item(_MinSelect("setup:end_min", "終了：分（5分刻み・必須）", row=4))
-
-        # ページ2（通知チャンネル・作成）
-        else:
-            # row0: 通知チャンネル
-            self.add_item(_NotifyChannelSelect())
-
-            # row1: タイトル入力（任意）
-            self.add_item(_TitleModalButton())
-
-            # row2: 戻る / 作成 / キャンセル
-            self.add_item(_Back())
-            self.add_item(_Create())
-            self.add_item(_Cancel())
+        v = str(self.text.value).strip()
+        self.st["title"] = v if v else None
+        await interaction.response.defer(ephemeral=True)
 
 
 def build_setup_view(st: dict) -> discord.ui.View:
-    # row を絶対 0〜4 しか使わない View を返す
-    return SetupWizardView(st)
+    v = discord.ui.View(timeout=600)
+
+    # 0) 今日/明日
+    b_today = discord.ui.Button(label="今日", style=discord.ButtonStyle.primary if st.get("day") == "today" else discord.ButtonStyle.secondary, custom_id="setup:day:today", row=0)
+    b_tomo  = discord.ui.Button(label="明日", style=discord.ButtonStyle.primary if st.get("day") == "tomorrow" else discord.ButtonStyle.secondary, custom_id="setup:day:tomorrow", row=0)
+    v.add_item(b_today); v.add_item(b_tomo)
+
+    # 1) 開始（時/分）
+    sel_sh = discord.ui.Select(
+        placeholder="開始：時", min_values=1, max_values=1,
+        options=[discord.SelectOption(label=h, value=h, default=(st.get("start_hour")==h)) for h in HOUR_OPTIONS],
+        custom_id="setup:start_hour", row=1
+    )
+    sel_sm = discord.ui.Select(
+        placeholder="開始：分(5分刻み)", min_values=1, max_values=1,
+        options=[discord.SelectOption(label=m, value=m, default=(st.get("start_min")==m)) for m in MIN_OPTIONS],
+        custom_id="setup:start_min", row=1
+    )
+    v.add_item(sel_sh); v.add_item(sel_sm)
+
+    # 2) 終了（時/分）
+    sel_eh = discord.ui.Select(
+        placeholder="終了：時", min_values=1, max_values=1,
+        options=[discord.SelectOption(label=h, value=h, default=(st.get("end_hour")==h)) for h in HOUR_OPTIONS],
+        custom_id="setup:end_hour", row=2
+    )
+    sel_em = discord.ui.Select(
+        placeholder="終了：分(5分刻み)", min_values=1, max_values=1,
+        options=[discord.SelectOption(label=m, value=m, default=(st.get("end_min")==m)) for m in MIN_OPTIONS],
+        custom_id="setup:end_min", row=2
+    )
+    v.add_item(sel_eh); v.add_item(sel_em)
+
+    # 3) 間隔 20/25/30
+    for mins in (20, 25, 30):
+        v.add_item(discord.ui.Button(
+            label=f"{mins}分",
+            style=discord.ButtonStyle.success if st.get("interval")==mins else discord.ButtonStyle.secondary,
+            custom_id=f"setup:interval:{mins}",
+            row=3
+        ))
+
+    # 4) 通知チャンネル（必須）+ everyone + タイトル + 作成
+    # チャンネルは ChannelSelect を使う
+    ch_sel = discord.ui.ChannelSelect(
+        channel_types=[discord.ChannelType.text],
+        placeholder="3分前通知チャンネル（必須）",
+        min_values=1, max_values=1,
+        custom_id="setup:notify_channel",
+        row=4
+    )
+    v.add_item(ch_sel)
+
+    b_every = discord.ui.Button(
+        label="@everyone " + ("ON" if st.get("everyone") else "OFF"),
+        style=discord.ButtonStyle.danger if st.get("everyone") else discord.ButtonStyle.secondary,
+        custom_id="setup:everyone:toggle",
+        row=4
+    )
+    v.add_item(b_every)
+
+    # タイトル入力ボタン（Modal）
+    b_title = discord.ui.Button(label="タイトル入力", style=discord.ButtonStyle.secondary, custom_id="setup:title:open", row=4)
+    b_clear = discord.ui.Button(label="タイトル消す", style=discord.ButtonStyle.secondary, custom_id="setup:title:clear", row=4)
+    b_create = discord.ui.Button(label="作成", style=discord.ButtonStyle.primary, custom_id="setup:create", row=4)
+
+    async def title_cb(interaction: discord.Interaction):
+        await interaction.response.send_modal(TitleModal(st))
+
+    b_title.callback = title_cb
+
+    v.add_item(b_title)
+    v.add_item(b_clear)
+    v.add_item(b_create)
+
+    return v
