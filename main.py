@@ -189,9 +189,6 @@ class MyClient(discord.Client):
                 # 想定外 custom_id
                 return
 
-            # 2) スラッシュコマンド等（discord.py に任せる）
-            await super().on_interaction(interaction)
-
         except Exception as e:
             print("on_interaction error:", repr(e))
             print(traceback.format_exc())
