@@ -250,14 +250,23 @@ async def main():
     if not TOKEN or not TOKEN.strip():
         raise RuntimeError("DISCORD_TOKEN が未設定です")
 
-    while True:
+    # ✅ 自前の while True 再起動はやめる（Renderが勝手に再起動する）
+    try:
+        await client.start(TOKEN)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # 念のためループ停止
         try:
-            async with client:
-                await client.start(TOKEN)
-        except Exception as e:
-            print("fatal error:", repr(e))
-            print(traceback.format_exc())
-            await asyncio.sleep(30)
+            if reminder_loop.is_running():
+                reminder_loop.stop()
+        except Exception:
+            pass
+
+        try:
+            await client.close()
+        except Exception:
+            pass
 
 
 asyncio.run(main())
