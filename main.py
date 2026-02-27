@@ -1,5 +1,5 @@
-# main.py  （B方式：custom_id を main.py で処理）
-print("🔥 BOOT MARKER v2026-02-27 B-mode stable FIXED 🔥")
+# main.py  ✅ 完全コピペ版（B方式：custom_id を main.py で処理）
+print("🔥 BOOT MARKER v2026-02-27 B-mode stable FINAL 🔥")
 
 import asyncio
 import os
@@ -97,44 +97,20 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
-    try:
-        # ボタン/セレクトだけ自前処理
-        if interaction.type == discord.InteractionType.component:
-            data = interaction.data or {}
-            custom_id = data.get("custom_id")
-            if not custom_id:
-                return
-
-            print("[COMPONENT]", custom_id)
-
-            await safe_defer(interaction, ephemeral=True)
-
-            # ここにあなたのslot処理などを書く
-            # （既存コードそのままでOK）
-
-            return
-
-        # それ以外は discord.py に丸投げ（これが一番安定）
-        await super().on_interaction(interaction)
-
-    except Exception as e:
-        print("on_interaction error:", repr(e))
-        print(traceback.format_exc())
         """
         ✅ B方式の要：
-        - ボタン/セレクト（component）だけここで自前処理
-        - それ以外（スラッシュ等）は CommandTree に渡す（重要）
+        - component(ボタン/セレクト)だけ自前処理
+        - それ以外（スラッシュ等）は CommandTree に渡す（awaitしない）
         """
         try:
             # -------------------------
             # 1) component 以外は tree に渡す
             # -------------------------
             if interaction.type != discord.InteractionType.component:
-                # discord.py の版差があるので「await しない」方式で統一（これで NoneType await を回避）
                 try:
-                    self.tree._from_interaction(interaction)  # ← await しないのがポイント
+                    # discord.py の版差で await できない/None を返す事があるので await しない
+                    self.tree._from_interaction(interaction)
                 except Exception:
-                    # ここで落ちても bot を落とさない
                     pass
                 return
 
@@ -216,6 +192,9 @@ class MyClient(discord.Client):
                 await self.dm.render_panel(self, panel_id)
                 await safe_send(interaction, msg, ephemeral=True)
                 return
+
+            # 想定外 custom_id は無視
+            return
 
         except Exception as e:
             print("on_interaction error:", repr(e))
