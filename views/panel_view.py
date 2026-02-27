@@ -1,144 +1,205 @@
-# views/panel_view.py
+# views/setup_wizard.py
 import discord
-from typing import List, Dict
+from datetime import datetime, timedelta, timezone
 
-from utils.time_utils import fmt_hm
+JST = timezone(timedelta(hours=9))
 
 
-def build_panel_embed(title: str | None, day_text: str, lines: list[str]):
-    e = discord.Embed(
-        title=title or "募集パネル",
-        description=f"{day_text}\n\n" + "\n".join(lines)
+def _fmt(st: dict) -> str:
+    day = st.get("day") or "未選択"
+    start = st.get("start") or "未選択"
+    end = st.get("end") or "未選択"
+    interval = st.get("interval") or "未選択"
+    ch = st.get("notify_channel_id")
+    chtxt = f"<#{ch}>" if ch else "未選択"
+    everyone = "ON" if st.get("everyone") else "OFF"
+    title = st.get("title") or "（なし）"
+    page = st.get("page", 1)
+
+    return (
+        f"**ページ**: {page}/2\n"
+        f"**日付**: {day}\n"
+        f"**開始**: {start}\n"
+        f"**終了**: {end}\n"
+        f"**間隔**: {interval}\n"
+        f"**通知チャンネル**: {chtxt}\n"
+        f"**@everyone**: {everyone}\n"
+        f"**タイトル**: {title}\n"
     )
-    e.set_footer(text="🟢空き / 🔴予約済み（本人は押すとキャンセル） / ⚪休憩（予約不可）")
+
+
+def build_setup_embed(st: dict) -> discord.Embed:
+    e = discord.Embed(
+        title="🧩 募集パネル作成（ウィザード）",
+        description=_fmt(st),
+    )
+    e.set_footer(text="※ row制限対策済み（0〜4のみ使用）")
     return e
 
 
-async def _respond(interaction: discord.Interaction, content: str, *, ephemeral: bool = True, view=None):
-    """二重返信でも落ちない send"""
-    try:
-        await interaction.response.send_message(content, ephemeral=ephemeral, view=view)
-    except discord.InteractionResponded:
-        await interaction.followup.send(content, ephemeral=ephemeral, view=view)
+def _hour_options():
+    opts = []
+    for h in range(0, 24):
+        opts.append(discord.SelectOption(label=f"{h:02d}", value=f"{h:02d}"))
+    return opts  # 24 <= 25 OK
 
 
-def _is_admin(interaction: discord.Interaction) -> bool:
-    m = interaction.user
-    return isinstance(m, discord.Member) and m.guild_permissions.administrator
+def _min_options():
+    opts = []
+    for m in range(0, 60, 5):
+        opts.append(discord.SelectOption(label=f"{m:02d}", value=f"{m:02d}"))
+    return opts  # 12 <= 25 OK
 
 
-class SlotButton(discord.ui.Button):
-    def __init__(self, dm, panel_id: int, slot_id: int, label: str, style: discord.ButtonStyle, disabled: bool, row: int):
-        # ✅ row は 0〜4 に強制
-        row = max(0, min(4, int(row)))
-
+class _IntervalSelect(discord.ui.Select):
+    def __init__(self):
         super().__init__(
-            label=label,
-            style=style,
-            disabled=disabled,
-            custom_id=f"panel:slot:{panel_id}:{slot_id}",
-            row=row
-        )
-        self.dm = dm
-        self.panel_id = panel_id
-        self.slot_id = slot_id
-
-    async def callback(self, interaction: discord.Interaction):
-        ok, msg = await self.dm.toggle_reserve(
-            slot_id=int(self.slot_id),
-            user_id=str(interaction.user.id),
-            user_name=getattr(interaction.user, "display_name", str(interaction.user)),
-        )
-        await self.dm.render_panel(interaction.client, int(self.panel_id))
-        await _respond(interaction, msg, ephemeral=True)
-
-
-class BreakToggleButton(discord.ui.Button):
-    def __init__(self, dm, panel_id: int, row: int):
-        # ✅ row は 0〜4 に強制
-        row = max(0, min(4, int(row)))
-
-        super().__init__(
-            label="🛠 休憩切替（管理者）",
-            style=discord.ButtonStyle.secondary,
-            custom_id=f"panel:breaktoggle:{panel_id}",
-            row=row
-        )
-        self.dm = dm
-        self.panel_id = panel_id
-
-    async def callback(self, interaction: discord.Interaction):
-        if not _is_admin(interaction):
-            await _respond(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
-            return
-
-        view = await self.dm.build_break_select_view(int(self.panel_id))
-        await _respond(interaction, "休憩にする/解除する時間を選んでね👇", ephemeral=True, view=view)
-
-
-class BreakSelect(discord.ui.Select):
-    def __init__(self, dm, panel_id: int, options: List[discord.SelectOption]):
-        super().__init__(
-            placeholder="休憩にする/解除する時間を選んで",
+            placeholder="間隔を選んで（必須）",
             min_values=1,
             max_values=1,
-            options=options[:25],
-            custom_id=f"panel:breakselect:{panel_id}",
+            options=[
+                discord.SelectOption(label="20分", value="20"),
+                discord.SelectOption(label="25分", value="25"),
+                discord.SelectOption(label="30分", value="30"),
+            ],
+            custom_id="setup:interval",
+            row=0,  # ✅ row固定
         )
-        self.dm = dm
-        self.panel_id = panel_id
-
-    async def callback(self, interaction: discord.Interaction):
-        if not _is_admin(interaction):
-            await _respond(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
-            return
-
-        if not self.values:
-            await _respond(interaction, "❌ 選択値が取得できませんでした", ephemeral=True)
-            return
-
-        slot_id = int(self.values[0])
-        ok, msg = await self.dm.toggle_break_slot(int(self.panel_id), slot_id)
-
-        await self.dm.render_panel(interaction.client, int(self.panel_id))
-        await _respond(interaction, msg, ephemeral=True)
 
 
-class BreakSelectView(discord.ui.View):
-    def __init__(self, dm, panel_id: int, options: List[discord.SelectOption]):
-        super().__init__(timeout=60)
-        self.add_item(BreakSelect(dm, panel_id, options))
+class _HourSelect(discord.ui.Select):
+    def __init__(self, custom_id: str, placeholder: str, row: int):
+        super().__init__(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1,
+            options=_hour_options(),
+            custom_id=custom_id,
+            row=row,  # ✅ row固定
+        )
 
 
-class PanelView(discord.ui.View):
-    """
-    ✅ row を絶対に 0〜4 に収める安全版
-    """
-    def __init__(self, dm, panel_id: int, buttons: List[Dict]):
+class _MinSelect(discord.ui.Select):
+    def __init__(self, custom_id: str, placeholder: str, row: int):
+        super().__init__(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1,
+            options=_min_options(),
+            custom_id=custom_id,
+            row=row,  # ✅ row固定
+        )
+
+
+class _DayToday(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="今日", style=discord.ButtonStyle.primary, custom_id="setup:day:today", row=0)
+
+
+class _DayTomorrow(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="明日", style=discord.ButtonStyle.primary, custom_id="setup:day:tomorrow", row=0)
+
+
+class _EveryoneToggle(discord.ui.Button):
+    def __init__(self, on: bool):
+        super().__init__(
+            label=f"@everyone: {'ON' if on else 'OFF'}",
+            style=discord.ButtonStyle.secondary,
+            custom_id="setup:everyone:toggle",
+            row=0,
+        )
+
+
+class _Next(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="次へ ▶", style=discord.ButtonStyle.success, custom_id="setup:page:next", row=0)
+
+
+class _Back(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="◀ 戻る", style=discord.ButtonStyle.secondary, custom_id="setup:page:back", row=2)
+
+
+class _Create(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="✅ 作成", style=discord.ButtonStyle.success, custom_id="setup:create", row=2)
+
+
+class _Cancel(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="✖ キャンセル", style=discord.ButtonStyle.danger, custom_id="setup:cancel", row=2)
+
+
+class _NotifyChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self):
+        super().__init__(
+            channel_types=[discord.ChannelType.text],
+            placeholder="3分前通知を送るチャンネル（必須）",
+            min_values=1,
+            max_values=1,
+            custom_id="setup:notify_channel",
+            row=0,  # ✅ row固定
+        )
+
+
+class _TitleModalButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="タイトル入力（任意）", style=discord.ButtonStyle.secondary, custom_id="setup:title:open", row=1)
+
+
+class TitleModal(discord.ui.Modal, title="募集タイトル（任意）"):
+    title_text = discord.ui.TextInput(
+        label="タイトル（空でもOK）",
+        required=False,
+        max_length=80,
+        placeholder="例）夜の募集 / 周回 / 作業枠 など",
+    )
+
+    def __init__(self, st: dict):
+        super().__init__()
+        self._st = st
+
+    async def on_submit(self, interaction: discord.Interaction):
+        t = str(self.title_text.value or "").strip()
+        self._st["title"] = t or None
+        await interaction.response.send_message("✅ タイトルを保存しました", ephemeral=True)
+
+
+class SetupWizardView(discord.ui.View):
+    def __init__(self, st: dict):
         super().__init__(timeout=None)
+        page = int(st.get("page", 1))
 
-        # ✅ 休憩ボタンを置くので slot は最大 24
-        slot_buttons = buttons[:24]
+        # ページ1（時間・日付・間隔）
+        if page == 1:
+            # row0: 今日/明日 + 間隔Select + everyone + 次へ で 5個以内
+            self.add_item(_DayToday())
+            self.add_item(_DayTomorrow())
+            self.add_item(_IntervalSelect())
+            self.add_item(_EveryoneToggle(bool(st.get("everyone"))))
+            self.add_item(_Next())
 
-        # slot buttons / 5列 / row 0〜4
-        for i, b in enumerate(slot_buttons):
-            row = i // 5
-            row = max(0, min(4, row))
-            self.add_item(SlotButton(
-                dm=dm,
-                panel_id=panel_id,
-                slot_id=int(b["slot_id"]),
-                label=b["label"],
-                style=b["style"],
-                disabled=bool(b["disabled"]),
-                row=row,
-            ))
+            # row1〜4: 時間（hour/min を分割）
+            self.add_item(_HourSelect("setup:start_hour", "開始：時（必須）", row=1))
+            self.add_item(_MinSelect("setup:start_min", "開始：分（5分刻み・必須）", row=2))
+            self.add_item(_HourSelect("setup:end_hour", "終了：時（必須）", row=3))
+            self.add_item(_MinSelect("setup:end_min", "終了：分（5分刻み・必須）", row=4))
 
-        # ✅ 休憩切替ボタンは「最後の行」に置く（row 0〜4固定）
-        if slot_buttons:
-            last_row = (len(slot_buttons) - 1) // 5
+        # ページ2（通知チャンネル・作成）
         else:
-            last_row = 0
-        last_row = max(0, min(4, last_row))
+            # row0: 通知チャンネル
+            self.add_item(_NotifyChannelSelect())
 
-        self.add_item(BreakToggleButton(dm=dm, panel_id=panel_id, row=last_row))
+            # row1: タイトル入力（任意）
+            self.add_item(_TitleModalButton())
+
+            # row2: 戻る / 作成 / キャンセル
+            self.add_item(_Back())
+            self.add_item(_Create())
+            self.add_item(_Cancel())
+
+
+def build_setup_view(st: dict) -> discord.ui.View:
+    # row を絶対 0〜4 しか使わない View を返す
+    return SetupWizardView(st)
