@@ -1,4 +1,4 @@
-print("🔥 BOOT MARKER v2026-02-27 B-mode stable FINAL COMPLETE 🔥")
+print("🔥 BOOT MARKER v2026-02-27 B-mode stable FINAL COMPLETE (PATCHED) 🔥")
 
 import asyncio
 import os
@@ -46,6 +46,7 @@ def _is_admin(interaction: discord.Interaction) -> bool:
 
 
 async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
+    """3秒制限回避。既に応答済みなら何もしない。"""
     try:
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=ephemeral)
@@ -54,6 +55,7 @@ async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True
 
 
 async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
+    """二重返信でも落ちない送信。"""
     try:
         if interaction.response.is_done():
             await interaction.followup.send(content, ephemeral=ephemeral)
@@ -72,10 +74,6 @@ class MyClient(discord.Client):
         self.tree = discord.app_commands.CommandTree(self)
         self.dm = DataManager()
         self._synced = False
-
-        # reminderバックオフ
-        self._reminder_fail_count = 0
-        self._reminder_pause_until = 0.0
 
         # setupウィザード状態（ユーザーごと）
         self.setup_state: dict[int, dict] = {}
@@ -103,14 +101,9 @@ class MyClient(discord.Client):
         if not reminder_loop.is_running():
             reminder_loop.start(self)
 
-    async def _dispatch_tree(self, interaction: discord.Interaction):
-        try:
-            res = self.tree._from_interaction(interaction)
-            if asyncio.iscoroutine(res):
-                await res
-        except Exception:
-            pass
-
+    # ------------------------------
+    # setup wizard helper
+    # ------------------------------
     def _get_setup_state(self, user_id: int) -> dict:
         st = self.setup_state.get(user_id)
         if st is None:
@@ -123,43 +116,63 @@ class MyClient(discord.Client):
                 "start": None,
                 "end": None,
                 "interval": None,
-                "notify_channel_id": None,
-                "everyone": False,
-                "title": None,
+                "notify_channel_id": None,  # 必須
+                "everyone": False,          # 任意
+                "title": None,              # 任意（今はUI未実装でもOK）
             }
             self.setup_state[user_id] = st
         return st
 
-    async def _refresh_setup(self, interaction: discord.Interaction):
+    async def _refresh_setup_message(self, interaction: discord.Interaction):
+        """setupメッセージを更新（返信はしない）"""
         st = self._get_setup_state(interaction.user.id)
         embed = build_setup_embed(st)
         view = build_setup_view(st)
         try:
-            await interaction.message.edit(embed=embed, view=view)
+            # component interaction なので message がある想定
+            if interaction.message:
+                await interaction.message.edit(embed=embed, view=view)
         except Exception:
             pass
 
+    # ------------------------------
+    # interaction handler
+    # ------------------------------
     async def on_interaction(self, interaction: discord.Interaction):
+        """
+        ✅重要:
+        - component以外（スラッシュ/オートコンプリート/Modal等）は標準処理(super)へ
+        - componentは「panel:*」「setup:*」だけ自前処理
+        - それ以外のcomponentは標準処理(super)へ（ここが超重要）
+        """
         try:
-            # component以外はtreeへ
+            # 1) component以外は「discord.py標準」に任せる（これが一番安定）
             if interaction.type != discord.InteractionType.component:
-                await self._dispatch_tree(interaction)
-                return
+                return await super().on_interaction(interaction)
 
+            # 2) component
             data = interaction.data or {}
             custom_id = data.get("custom_id")
             values = data.get("values") or []
 
-            if not custom_id:
-                return
+            if not isinstance(custom_id, str):
+                return await super().on_interaction(interaction)
 
+            # ✅ panel / setup 以外は横取りしない（他Viewが死ぬのを防ぐ）
+            if not (custom_id.startswith("panel:") or custom_id.startswith("setup:")):
+                return await super().on_interaction(interaction)
+
+            # 以降は自前処理なので先にdefer
             await safe_defer(interaction, ephemeral=True)
 
             # -----------------------------
-            # panel処理（既存）
+            # panel処理
             # -----------------------------
             if custom_id.startswith("panel:slot:"):
                 parts = custom_id.split(":")
+                if len(parts) != 4:
+                    return await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
+
                 panel_id = int(parts[2])
                 slot_id = int(parts[3])
 
@@ -168,10 +181,44 @@ class MyClient(discord.Client):
                     user_id=str(interaction.user.id),
                     user_name=getattr(interaction.user, "display_name", str(interaction.user)),
                 )
-
                 await self.dm.render_panel(self, panel_id)
-                await safe_send(interaction, msg)
-                return
+                return await safe_send(interaction, msg, ephemeral=True)
+
+            if custom_id.startswith("panel:breaktoggle:"):
+                if not _is_admin(interaction):
+                    return await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+
+                parts = custom_id.split(":")
+                if len(parts) != 3:
+                    return await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
+
+                panel_id = int(parts[2])
+                view = await self.dm.build_break_select_view(panel_id)
+                try:
+                    return await interaction.followup.send(
+                        "⌚️ 休憩にする/解除する時間を選んでね👇",
+                        view=view,
+                        ephemeral=True,
+                    )
+                except Exception:
+                    return await safe_send(interaction, "❌ 表示に失敗しました（もう一度押して）", ephemeral=True)
+
+            if custom_id.startswith("panel:breakselect:"):
+                if not _is_admin(interaction):
+                    return await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+
+                parts = custom_id.split(":")
+                if len(parts) != 3:
+                    return await safe_send(interaction, "❌ セレクト形式が不正です", ephemeral=True)
+
+                panel_id = int(parts[2])
+                if not values:
+                    return await safe_send(interaction, "❌ 選択値が取得できませんでした", ephemeral=True)
+
+                slot_id = int(values[0])
+                ok, msg = await self.dm.toggle_break_slot(panel_id, slot_id)
+                await self.dm.render_panel(self, panel_id)
+                return await safe_send(interaction, msg, ephemeral=True)
 
             # -----------------------------
             # setupウィザード
@@ -202,29 +249,33 @@ class MyClient(discord.Client):
                 elif custom_id == "setup:everyone:toggle":
                     st["everyone"] = not st["everyone"]
 
-                # 時刻確定
+                # 文字列時刻の組み立て
                 if st.get("start_hour") and st.get("start_min"):
                     st["start"] = f"{st['start_hour']}:{st['start_min']}"
                 if st.get("end_hour") and st.get("end_min"):
                     st["end"] = f"{st['end_hour']}:{st['end_min']}"
 
-                # 作成
+                # 作成ボタン
                 if custom_id == "setup:create":
                     missing = []
-                    if not st.get("day"): missing.append("今日/明日")
-                    if not st.get("start"): missing.append("開始")
-                    if not st.get("end"): missing.append("終了")
-                    if not st.get("interval"): missing.append("間隔")
-                    if not st.get("notify_channel_id"): missing.append("通知チャンネル")
+                    if not st.get("day"):
+                        missing.append("今日/明日")
+                    if not st.get("start"):
+                        missing.append("開始")
+                    if not st.get("end"):
+                        missing.append("終了")
+                    if not st.get("interval"):
+                        missing.append("間隔")
+                    if not st.get("notify_channel_id"):
+                        missing.append("通知チャンネル")
 
                     if missing:
-                        await safe_send(interaction, "❌ 未入力: " + " / ".join(missing))
-                        await self._refresh_setup(interaction)
-                        return
+                        await self._refresh_setup_message(interaction)
+                        return await safe_send(interaction, "❌ 未入力: " + " / ".join(missing), ephemeral=True)
 
                     JST = timezone(timedelta(hours=9))
                     today = datetime.now(JST).date()
-                    day = today if st["day"] == "today" else today + timedelta(days=1)
+                    day = today if st["day"] == "today" else (today + timedelta(days=1))
 
                     sh, sm = map(int, st["start"].split(":"))
                     eh, em = map(int, st["end"].split(":"))
@@ -232,6 +283,7 @@ class MyClient(discord.Client):
                     start_at = datetime(day.year, day.month, day.day, sh, sm, tzinfo=JST)
                     end_at = datetime(day.year, day.month, day.day, eh, em, tzinfo=JST)
 
+                    # 日跨ぎOK
                     if end_at <= start_at:
                         end_at += timedelta(days=1)
 
@@ -248,40 +300,44 @@ class MyClient(discord.Client):
                     )
 
                     if not res.get("ok"):
-                        await safe_send(interaction, "❌ 作成失敗")
-                        await self._refresh_setup(interaction)
-                        return
+                        await self._refresh_setup_message(interaction)
+                        return await safe_send(interaction, f"❌ 作成失敗: {res.get('error','unknown')}", ephemeral=True)
 
                     await self.dm.render_panel(self, int(res["panel_id"]))
                     self.setup_state.pop(interaction.user.id, None)
+                    return await safe_send(interaction, "✅ 作成完了", ephemeral=True)
 
-                    await safe_send(interaction, "✅ 作成完了")
-                    return
-
-                await self._refresh_setup(interaction)
-                await safe_send(interaction, "✅ 更新")
+                # create以外は「画面だけ更新」して終わり（返信しない）
+                await self._refresh_setup_message(interaction)
                 return
 
-            await safe_send(interaction, f"unknown custom_id: {custom_id}")
+            # ここには基本来ない（保険）
+            return await safe_send(interaction, f"unknown custom_id: {custom_id}", ephemeral=True)
 
         except Exception as e:
             print("on_interaction error:", repr(e))
             print(traceback.format_exc())
-            await safe_send(interaction, f"❌ エラー: {repr(e)}")
+            try:
+                return await safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
+            except Exception:
+                return
 
 
 client = MyClient()
 
 
+# ------------------------------
+# reminder loop
+# ------------------------------
 @tasks.loop(seconds=60, reconnect=True)
 async def reminder_loop(bot: MyClient):
     if not bot.is_ready() or bot.is_closed():
         return
-
     try:
         await bot.dm.send_3min_reminders(bot)
     except Exception as e:
         print("reminder_loop error:", repr(e))
+        print(traceback.format_exc())
 
 
 @reminder_loop.before_loop
@@ -301,7 +357,6 @@ async def before_reminder_loop():
 async def main():
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN 未設定")
-
     await client.start(TOKEN)
 
 
