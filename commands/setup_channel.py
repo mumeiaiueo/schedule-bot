@@ -1,16 +1,38 @@
 # commands/setup_channel.py
+import traceback
 import discord
-from discord import app_commands
+
 from views.setup_wizard import build_setup_embed, build_setup_view
 
-def register(tree: app_commands.CommandTree, dm):
+async def safe_defer(interaction: discord.Interaction, *, ephemeral=True):
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=ephemeral)
+    except Exception:
+        pass
 
-    @tree.command(name="setup_channel", description="募集枠をボタンで作成（ウィザード）")
+async def safe_followup(interaction: discord.Interaction, content=None, *, embed=None, view=None, ephemeral=True):
+    try:
+        await interaction.followup.send(content=content, embed=embed, view=view, ephemeral=ephemeral)
+    except Exception:
+        pass
+
+def register(tree: discord.app_commands.CommandTree, dm):
+    @tree.command(name="setup_channel", description="このチャンネルに予約枠パネルを作成（ウィザード）")
     async def setup_channel(interaction: discord.Interaction):
-        # セッション初期化は main 側で持つので、ここは表示だけ
-        await interaction.response.send_message(
-            "📅 今日 or 明日 を選んでください",
-            embed=build_setup_embed({}),
-            view=build_setup_view({}),
-            ephemeral=True
-        )
+        # ✅ 3秒対策（これが無いと “反応しません” が出る）
+        await safe_defer(interaction, ephemeral=True)
+
+        try:
+            # client.setup_state を使う
+            st = dm.get_or_init_setup_state(interaction.client.setup_state, interaction.user.id)
+
+            embed = build_setup_embed(st)
+            view = build_setup_view(st)
+
+            await safe_followup(interaction, embed=embed, view=view, ephemeral=True)
+
+        except Exception as e:
+            print("setup_channel error:", repr(e))
+            print(traceback.format_exc())
+            await safe_followup(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
