@@ -9,9 +9,13 @@ from views.panel_view import PanelView, BreakSelectView, build_panel_embed
 
 
 class DataManager:
-    # --- Supabase(同期)を別スレッドで回す ---
     async def _db(self, fn):
         return await asyncio.to_thread(fn)
+
+    # ✅ 追加：DBが死んでる時に分かりやすく止める
+    def _require_db(self):
+        if sb is None:
+            raise RuntimeError("Supabaseが未接続です（SUPABASE_URL/KEY or DNS を確認）")
 
     # ---------- guild settings (manager role) ----------
     async def get_manager_role_id(self, guild_id: str):
