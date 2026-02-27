@@ -97,6 +97,29 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
+    try:
+        # ボタン/セレクトだけ自前処理
+        if interaction.type == discord.InteractionType.component:
+            data = interaction.data or {}
+            custom_id = data.get("custom_id")
+            if not custom_id:
+                return
+
+            print("[COMPONENT]", custom_id)
+
+            await safe_defer(interaction, ephemeral=True)
+
+            # ここにあなたのslot処理などを書く
+            # （既存コードそのままでOK）
+
+            return
+
+        # それ以外は discord.py に丸投げ（これが一番安定）
+        await super().on_interaction(interaction)
+
+    except Exception as e:
+        print("on_interaction error:", repr(e))
+        print(traceback.format_exc())
         """
         ✅ B方式の要：
         - ボタン/セレクト（component）だけここで自前処理
