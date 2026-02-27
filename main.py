@@ -1,5 +1,5 @@
 # main.py  （B方式：custom_id を main.py で処理）
-print("🔥 BOOT MARKER v2026-02-27 B-mode stable 🔥")
+print("🔥 BOOT MARKER v2026-02-27 B-mode stable FIXED 🔥")
 
 import asyncio
 import os
@@ -99,23 +99,34 @@ class MyClient(discord.Client):
     async def on_interaction(self, interaction: discord.Interaction):
         """
         ✅ B方式の要：
-        - ボタン/セレクト（component）だけここで処理
-        - スラッシュコマンドは discord.py が内部で処理するので、ここでは触らない
+        - ボタン/セレクト（component）だけここで自前処理
+        - それ以外（スラッシュ等）は CommandTree に渡す（重要）
         """
         try:
+            # -------------------------
+            # 1) component 以外は tree に渡す
+            # -------------------------
             if interaction.type != discord.InteractionType.component:
+                # discord.py の版差があるので「await しない」方式で統一（これで NoneType await を回避）
+                try:
+                    self.tree._from_interaction(interaction)  # ← await しないのがポイント
+                except Exception:
+                    # ここで落ちても bot を落とさない
+                    pass
                 return
 
+            # -------------------------
+            # 2) ここから component 処理
+            # -------------------------
             data = interaction.data or {}
             custom_id = data.get("custom_id")
             if not custom_id or not isinstance(custom_id, str):
                 return
 
+            # 先に defer（3秒制限回避）
             await safe_defer(interaction, ephemeral=True)
 
-            # -------------------------
             # panel:slot:<panel_id>:<slot_id>
-            # -------------------------
             if custom_id.startswith("panel:slot:"):
                 parts = custom_id.split(":")
                 if len(parts) != 4:
@@ -135,12 +146,8 @@ class MyClient(discord.Client):
                 await safe_send(interaction, msg, ephemeral=True)
                 return
 
-            # -------------------------
             # panel:breaktoggle:<panel_id>
-            # -------------------------
             if custom_id.startswith("panel:breaktoggle:"):
-                # 管理者 or 管理ロール（DataManagerにあるならそっちで判定も可能）
-                # ここはまず管理者に限定（必要なら role 判定へ拡張）
                 if not _is_admin(interaction):
                     await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
                     return
@@ -153,7 +160,7 @@ class MyClient(discord.Client):
                 panel_id = int(parts[2])
                 view = await self.dm.build_break_select_view(panel_id)
 
-                # view 付きで返す（1発でOK）
+                # defer 済みなので followup で送る
                 try:
                     await interaction.followup.send(
                         "⌚️ 休憩にする/解除する時間を選んでね👇",
@@ -164,9 +171,7 @@ class MyClient(discord.Client):
                     await safe_send(interaction, "❌ 表示に失敗しました（もう一度押して）", ephemeral=True)
                 return
 
-            # -------------------------
             # panel:breakselect:<panel_id>（Select）
-            # -------------------------
             if custom_id.startswith("panel:breakselect:"):
                 if not _is_admin(interaction):
                     await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
@@ -201,6 +206,8 @@ client = MyClient()
 @tasks.loop(seconds=60, reconnect=True)
 async def reminder_loop(bot: MyClient):
     if not bot.is_ready():
+        return
+    if bot.is_closed():
         return
 
     loop = asyncio.get_running_loop()
@@ -250,13 +257,9 @@ async def main():
     if not TOKEN or not TOKEN.strip():
         raise RuntimeError("DISCORD_TOKEN が未設定です")
 
-    # ✅ 自前の while True 再起動はやめる（Renderが勝手に再起動する）
     try:
         await client.start(TOKEN)
-    except KeyboardInterrupt:
-        pass
     finally:
-        # 念のためループ停止
         try:
             if reminder_loop.is_running():
                 reminder_loop.stop()
