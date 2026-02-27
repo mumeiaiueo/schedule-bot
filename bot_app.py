@@ -1,5 +1,5 @@
 # bot_app.py
-print("🔥 BOOT bot_app.py v2026-02-27 split-core 🔥")
+print("🔥 BOOT bot_app.py v2026-02-28 STABLE 🔥")
 
 import traceback
 import discord
@@ -27,12 +27,10 @@ class MyClient(discord.Client):
         self.dm = DataManager()
         self._synced = False
 
-        # reminderバックオフ（落ちにくくする）
-        self._reminder_fail_count = 0
-        self._reminder_pause_until = 0.0  # loop.time()
+        # setup wizard state
+        self.setup_state: dict[int, dict] = {}
 
     async def setup_hook(self):
-        # ✅ スラッシュ登録
         register_setup(self.tree, self.dm)
         register_reset(self.tree, self.dm)
         register_remind(self.tree, self.dm)
@@ -41,14 +39,13 @@ class MyClient(discord.Client):
         register_manager_role(self.tree, self.dm)
 
     async def on_ready(self):
-        # ✅ 初回だけ同期
         if not self._synced:
             try:
                 await self.tree.sync()
                 self._synced = True
                 print("✅ commands synced")
             except Exception:
-                print("⚠️ tree.sync failed")
+                print("⚠️ sync error")
                 print(traceback.format_exc())
 
         print(f"✅ Logged in as {self.user}")
@@ -57,7 +54,7 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
-        # ✅ ここが超重要：application_commandもcomponentも全部ここに来る
+        # ここで全部さばく（version差分に強い）
         await handle_interaction(self, interaction)
 
 
@@ -65,26 +62,27 @@ class MyClient(discord.Client):
 async def reminder_loop(bot: MyClient):
     if not bot.is_ready() or bot.is_closed():
         return
-
-    loop = bot.loop
-    if bot._reminder_pause_until and loop.time() < bot._reminder_pause_until:
-        return
-
     try:
         await bot.dm.send_3min_reminders(bot)
-        bot._reminder_fail_count = 0
-        bot._reminder_pause_until = 0.0
     except Exception as e:
-        bot._reminder_fail_count += 1
         print("reminder_loop error:", repr(e))
         print(traceback.format_exc())
 
-        # 60,120,240,480… 最大600秒
-        backoff = min(600, 60 * (2 ** (bot._reminder_fail_count - 1)))
-        bot._reminder_pause_until = loop.time() + backoff
-        print(f"⏸ reminder paused for {backoff}s (fail_count={bot._reminder_fail_count})")
 
-
-async def run_bot(token: str):
+async def run_bot_once(token: str):
+    """
+    1回起動して、落ちたら例外を投げる（再起動は main.py がやる）
+    """
     client = MyClient()
-    await client.start(token)
+    try:
+        await client.start(token)
+    finally:
+        try:
+            if reminder_loop.is_running():
+                reminder_loop.stop()
+        except Exception:
+            pass
+        try:
+            await client.close()
+        except Exception:
+            pass
