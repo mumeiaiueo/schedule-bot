@@ -1,4 +1,5 @@
-print("🔥 BOOT MARKER v2026-02-27 B-mode stable FINAL 🔥")
+# main.py  （B方式：custom_id を main.py で処理）
+print("🔥 BOOT MARKER v2026-02-27 B-mode stable FINAL FIX 🔥")
 
 import asyncio
 import os
@@ -41,6 +42,7 @@ def _is_admin(interaction: discord.Interaction) -> bool:
 
 
 async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
+    """3秒制限回避。既に応答済みなら何もしない。"""
     try:
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=ephemeral)
@@ -49,26 +51,13 @@ async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True
 
 
 async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
+    """二重返信でも落ちない送信。"""
     try:
         if interaction.response.is_done():
             await interaction.followup.send(content, ephemeral=ephemeral)
         else:
             await interaction.response.send_message(content, ephemeral=ephemeral)
     except Exception:
-        pass
-
-
-async def _dispatch_tree(tree: discord.app_commands.CommandTree, interaction: discord.Interaction):
-    """
-    discord.py の版差対策：
-    tree._from_interaction が coroutine の版と、None返す版がある。
-    """
-    try:
-        res = tree._from_interaction(interaction)
-        if asyncio.iscoroutine(res):
-            await res
-    except Exception:
-        # ここで落として bot を止めない
         pass
 
 
@@ -79,6 +68,7 @@ class MyClient(discord.Client):
         self.dm = DataManager()
         self._synced = False
 
+        # reminder のバックオフ制御
         self._reminder_fail_count = 0
         self._reminder_pause_until = 0.0  # loop.time()
 
@@ -106,17 +96,31 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
+        """
+        ✅ 安定版:
+        - component(ボタン/セレクト) はここで処理
+        - application_command(スラッシュ) は process_interaction に渡す（公式）
+        """
         try:
-            # ✅ スラッシュ等は tree に渡す（B方式でも必須）
-            if interaction.type != discord.InteractionType.component:
-                await _dispatch_tree(self.tree, interaction)
+            # -------------------------
+            # 1) スラッシュコマンド等は tree に渡す（公式）
+            # -------------------------
+            if interaction.type == discord.InteractionType.application_command:
+                await self.tree.process_interaction(interaction)
                 return
 
-            # ✅ ここから component（ボタン/セレクト）だけ自前処理
+            # -------------------------
+            # 2) component（ボタン/セレクト）
+            # -------------------------
+            if interaction.type != discord.InteractionType.component:
+                return
+
             data = interaction.data or {}
             custom_id = data.get("custom_id")
             if not custom_id or not isinstance(custom_id, str):
                 return
+
+            print("[COMPONENT]", custom_id)
 
             await safe_defer(interaction, ephemeral=True)
 
@@ -154,7 +158,7 @@ class MyClient(discord.Client):
                 panel_id = int(parts[2])
                 view = await self.dm.build_break_select_view(panel_id)
 
-                # defer 済みなので followup
+                # defer 済みなので followup で view 付き送信
                 try:
                     await interaction.followup.send(
                         "⌚️ 休憩にする/解除する時間を選んでね👇",
@@ -183,10 +187,14 @@ class MyClient(discord.Client):
                     return
 
                 slot_id = int(values[0])
+
                 ok, msg = await self.dm.toggle_break_slot(panel_id, slot_id)
                 await self.dm.render_panel(self, panel_id)
                 await safe_send(interaction, msg, ephemeral=True)
                 return
+
+            # 想定外 custom_id
+            await safe_send(interaction, f"unknown custom_id: {custom_id}", ephemeral=True)
 
         except Exception as e:
             print("on_interaction error:", repr(e))
@@ -259,6 +267,7 @@ async def main():
                 reminder_loop.stop()
         except Exception:
             pass
+
         try:
             await client.close()
         except Exception:
