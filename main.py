@@ -263,20 +263,6 @@ async def main():
     if not TOKEN or not TOKEN.strip():
         raise RuntimeError("DISCORD_TOKEN が未設定です")
 
-    while True:
-        try:
-            async with client:
-                await client.start(TOKEN)
-
-        except discord.HTTPException as e:
-            print("discord HTTPException:", repr(e))
-            print(traceback.format_exc())
-            await asyncio.sleep(90)
-
-        except Exception as e:
-            print("fatal error:", repr(e))
-            print(traceback.format_exc())
-            await asyncio.sleep(90)
-
+    await client.start(TOKEN)
 
 asyncio.run(main())
