@@ -1,18 +1,12 @@
 # bot_interact.py
-print("✅ LOADED bot_interact.py v2026-02-27 split-router")
+print("🔥 BOOT bot_interact.py v2026-02-28 STABLE 🔥")
 
 import asyncio
 import traceback
 import discord
 
 
-def _is_admin(interaction: discord.Interaction) -> bool:
-    m = interaction.user
-    return isinstance(m, discord.Member) and m.guild_permissions.administrator
-
-
-async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
-    """3秒制限回避。既に応答済みなら何もしない。"""
+async def _safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
     try:
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=ephemeral)
@@ -20,8 +14,7 @@ async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True
         pass
 
 
-async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
-    """二重返信でも落ちない送信。"""
+async def _safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
     try:
         if interaction.response.is_done():
             await interaction.followup.send(content, ephemeral=ephemeral)
@@ -33,31 +26,43 @@ async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral
 
 async def _dispatch_tree(bot, interaction: discord.Interaction):
     """
-    ✅ スラッシュコマンド(application_command) を CommandTree に渡す
-    これが無いと “応答なし” になって /setup_channel が死ぬ
+    discord.py のバージョン差分を吸収して Tree に渡す
     """
     try:
-        res = bot.tree._from_interaction(interaction)  # discord.py内部APIだけど安定動作
-        if asyncio.iscoroutine(res):
-            await res
+        if hasattr(bot.tree, "process_interaction"):
+            coro = bot.tree.process_interaction(interaction)
+            if asyncio.iscoroutine(coro):
+                await coro
+            return
+
+        # process_interaction が無い環境でも動くように
+        if hasattr(bot.tree, "_from_interaction"):
+            res = bot.tree._from_interaction(interaction)
+            if asyncio.iscoroutine(res):
+                await res
+            return
+
+        await _safe_send(interaction, "❌ この環境のdiscord.pyが古い/違う可能性があります", ephemeral=True)
+
     except Exception:
-        # tree側の例外はログに出しておく
+        # Tree が例外吐いても落とさない
         print("tree dispatch error")
         print(traceback.format_exc())
 
 
+def _is_admin(interaction: discord.Interaction) -> bool:
+    m = interaction.user
+    return isinstance(m, discord.Member) and m.guild_permissions.administrator
+
+
 async def handle_interaction(bot, interaction: discord.Interaction):
     try:
-        # -------------------------
-        # 1) スラッシュコマンド等
-        # -------------------------
+        # 1) スラッシュコマンド等は Tree に渡す
         if interaction.type == discord.InteractionType.application_command:
             await _dispatch_tree(bot, interaction)
             return
 
-        # -------------------------
-        # 2) component（ボタン/セレクト）
-        # -------------------------
+        # 2) component以外は無視
         if interaction.type != discord.InteractionType.component:
             return
 
@@ -65,21 +70,20 @@ async def handle_interaction(bot, interaction: discord.Interaction):
         custom_id = data.get("custom_id")
         values = data.get("values") or []
 
-        if not custom_id or not isinstance(custom_id, str):
+        if not isinstance(custom_id, str) or not custom_id:
             return
 
-        print("[COMPONENT]", custom_id)
-
-        # ✅ まずdefer（これが遅いと“応答なし”になりやすい）
-        await safe_defer(interaction, ephemeral=True)
+        # 3) 3秒制限回避（ここが “応答なし” 対策の要）
+        await _safe_defer(interaction, ephemeral=True)
 
         # -------------------------
-        # panel:slot:<panel_id>:<slot_id>
+        # 既存: panel ボタン
         # -------------------------
         if custom_id.startswith("panel:slot:"):
+            # panel:slot:<panel_id>:<slot_id>
             parts = custom_id.split(":")
             if len(parts) != 4:
-                await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
+                await _safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
                 return
 
             panel_id = int(parts[2])
@@ -92,72 +96,54 @@ async def handle_interaction(bot, interaction: discord.Interaction):
             )
 
             await bot.dm.render_panel(bot, panel_id)
-            await safe_send(interaction, msg, ephemeral=True)
+            await _safe_send(interaction, msg, ephemeral=True)
             return
 
-        # -------------------------
-        # panel:breaktoggle:<panel_id>
-        # -------------------------
         if custom_id.startswith("panel:breaktoggle:"):
             if not _is_admin(interaction):
-                await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+                await _safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
                 return
 
             parts = custom_id.split(":")
             if len(parts) != 3:
-                await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
+                await _safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
                 return
 
             panel_id = int(parts[2])
             view = await bot.dm.build_break_select_view(panel_id)
-
-            try:
-                await interaction.followup.send(
-                    "⌚️ 休憩にする/解除する時間を選んでね👇",
-                    view=view,
-                    ephemeral=True,
-                )
-            except Exception:
-                await safe_send(interaction, "❌ 表示に失敗しました（もう一度押して）", ephemeral=True)
+            await interaction.followup.send(
+                "⌚️ 休憩にする/解除する時間を選んでね👇",
+                view=view,
+                ephemeral=True,
+            )
             return
 
-        # -------------------------
-        # panel:breakselect:<panel_id>
-        # -------------------------
         if custom_id.startswith("panel:breakselect:"):
             if not _is_admin(interaction):
-                await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+                await _safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
                 return
 
             parts = custom_id.split(":")
             if len(parts) != 3:
-                await safe_send(interaction, "❌ セレクト形式が不正です", ephemeral=True)
+                await _safe_send(interaction, "❌ セレクト形式が不正です", ephemeral=True)
                 return
 
             panel_id = int(parts[2])
             if not values:
-                await safe_send(interaction, "❌ 選択値が取得できませんでした", ephemeral=True)
+                await _safe_send(interaction, "❌ 選択値が取得できませんでした", ephemeral=True)
                 return
 
             slot_id = int(values[0])
-
             ok, msg = await bot.dm.toggle_break_slot(panel_id, slot_id)
             await bot.dm.render_panel(bot, panel_id)
-            await safe_send(interaction, msg, ephemeral=True)
+            await _safe_send(interaction, msg, ephemeral=True)
             return
 
-        # -------------------------
-        # setup ウィザード系（もし views/setup_wizard を使うならここに追加）
-        # ※いまは “応答なし” を止めるのが最優先なので、
-        #   setup_wizard の custom_id 処理は「次」に回してOK
-        # -------------------------
-
-        await safe_send(interaction, f"unknown custom_id: {custom_id}", ephemeral=True)
+        # それ以外（setupウィザード等）は Tree 側が扱うなら Tree に流す
+        # （今後 setup: をここで処理したくなったらここに足せる）
+        await _safe_send(interaction, f"unknown custom_id: {custom_id}", ephemeral=True)
 
     except Exception as e:
         print("handle_interaction error:", repr(e))
         print(traceback.format_exc())
-        try:
-            await safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
-        except Exception:
-            pass
+        await _safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
