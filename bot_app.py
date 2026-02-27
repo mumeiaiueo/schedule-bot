@@ -1,5 +1,4 @@
 # bot_app.py
-import asyncio
 import traceback
 import discord
 from discord.ext import tasks
@@ -27,6 +26,7 @@ class MyClient(discord.Client):
         self._synced = False
 
     async def setup_hook(self):
+        # スラッシュコマンド登録
         register_setup(self.tree, self.dm)
         register_reset(self.tree, self.dm)
         register_remind(self.tree, self.dm)
@@ -50,18 +50,14 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
+        # component は bot_interact に集約
         await handle_interaction(self, interaction)
 
-
-# ------------------------------
-# reminder loop
-# ------------------------------
 
 @tasks.loop(seconds=60, reconnect=True)
 async def reminder_loop(bot: MyClient):
     if not bot.is_ready() or bot.is_closed():
         return
-
     try:
         await bot.dm.send_3min_reminders(bot)
     except Exception as e:
@@ -71,4 +67,15 @@ async def reminder_loop(bot: MyClient):
 
 async def run_bot(token: str):
     client = MyClient()
-    await client.start(token)
+    try:
+        await client.start(token)
+    finally:
+        try:
+            if reminder_loop.is_running():
+                reminder_loop.stop()
+        except Exception:
+            pass
+        try:
+            await client.close()
+        except Exception:
+            pass
