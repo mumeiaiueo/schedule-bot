@@ -73,7 +73,7 @@ class MyClient(discord.Client):
         # setupウィザード状態（ユーザーごと）
         self.setup_state: dict[int, dict] = {}
 
-    async def setup_hook(self):
+        async def setup_hook(self):
         register_setup(self.tree, self.dm)
         register_reset(self.tree, self.dm)
         register_remind(self.tree, self.dm)
@@ -81,58 +81,31 @@ class MyClient(discord.Client):
         register_notify_panel(self.tree, self.dm)
         register_manager_role(self.tree, self.dm)
 
-        # ✅ スラッシュで落ちた時に「応答しない」を防ぐ保険
+        # ✅ 追加：スラッシュコマンドの例外を必ずログ＆返信する（超重要）
         @self.tree.error
-        async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
-            print("⚠️ app_command error:", repr(error))
+        async def on_app_command_error(interaction: discord.Interaction, error: Exception):
+            # CommandInvokeError の中身（元の例外）を取り出す
+            original = getattr(error, "original", None)
+
+            print("❌ APP_COMMAND_ERROR:", repr(error))
+            if original:
+                print("❌ ORIGINAL:", repr(original))
             print(traceback.format_exc())
-            # ここで返事を返しておく（Discordの“応答しない”を防ぐ）
-            await safe_send(interaction, f"❌ コマンドエラー: {type(error).__name__}", ephemeral=True)
 
-    async def on_ready(self):
-        if not self._synced:
+            # 3秒で「反応しません」にならないよう、できるだけ返す
             try:
-                await self.tree.sync()
-                self._synced = True
-                print("✅ commands synced")
-            except Exception as e:
-                print("⚠️ tree.sync failed:", repr(e))
-                print(traceback.format_exc())
-
-        print(f"✅ Logged in as {self.user}")
-
-        if not reminder_loop.is_running():
-            reminder_loop.start(self)
-
-    def _get_setup_state(self, user_id: int) -> dict:
-        st = self.setup_state.get(user_id)
-        if st is None:
-            st = {
-                "day": None,
-                "start_hour": None,
-                "start_min": None,
-                "end_hour": None,
-                "end_min": None,
-                "start": None,
-                "end": None,
-                "interval": None,
-                "notify_channel_id": None,  # 必須
-                "everyone": False,          # 任意
-                "title": None,              # 任意
-            }
-            self.setup_state[user_id] = st
-        return st
-
-    async def _refresh_setup(self, interaction: discord.Interaction):
-        st = self._get_setup_state(interaction.user.id)
-        embed = build_setup_embed(st)
-        view = build_setup_view(st)
-        try:
-            # component の元メッセージ更新
-            if interaction.message:
-                await interaction.message.edit(embed=embed, view=view)
-        except Exception:
-            pass
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        f"❌ コマンドエラー: {type(original or error).__name__}\n{repr(original or error)}",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"❌ コマンドエラー: {type(original or error).__name__}\n{repr(original or error)}",
+                        ephemeral=True
+                    )
+            except Exception:
+                pass
 
     async def on_interaction(self, interaction: discord.Interaction):
         try:
