@@ -1,4 +1,4 @@
-# main.py  ✅ 完全コピペ版（B方式：custom_id を main.py で処理）
+# main.py  （B方式：custom_id を main.py で処理）
 print("🔥 BOOT MARKER v2026-02-27 B-mode stable 🔥")
 
 import asyncio
