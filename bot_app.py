@@ -1,7 +1,7 @@
 # bot_app.py
-print("🔥 BOOT bot_app.py v2026-02-28 STABLE 🔥")
-
+import asyncio
 import traceback
+
 import discord
 from discord.ext import tasks
 
@@ -14,7 +14,7 @@ from commands.notify import register as register_notify
 from commands.notify_panel import register as register_notify_panel
 from commands.set_manager_role import register as register_manager_role
 
-from bot_interact import handle_interaction
+from bot_interact import handle_component_interaction
 
 
 intents = discord.Intents.default()
@@ -27,10 +27,8 @@ class MyClient(discord.Client):
         self.dm = DataManager()
         self._synced = False
 
-        # setup wizard state
-        self.setup_state: dict[int, dict] = {}
-
     async def setup_hook(self):
+        # slash commands 登録
         register_setup(self.tree, self.dm)
         register_reset(self.tree, self.dm)
         register_remind(self.tree, self.dm)
@@ -39,6 +37,7 @@ class MyClient(discord.Client):
         register_manager_role(self.tree, self.dm)
 
     async def on_ready(self):
+        # コマンド同期（最初の1回だけ）
         if not self._synced:
             try:
                 await self.tree.sync()
@@ -54,35 +53,64 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
-        # ここで全部さばく（version差分に強い）
-        await handle_interaction(self, interaction)
+        """
+        ここが最重要。
+        - /コマンド(application_command, autocomplete) は tree に渡す
+        - ボタン/セレクト(component) だけ自前処理
+        """
+        try:
+            if interaction.type in (
+                discord.InteractionType.application_command,
+                discord.InteractionType.autocomplete,
+            ):
+                res = self.tree._from_interaction(interaction)
+                if asyncio.iscoroutine(res):
+                    await res
+                return
+
+            if interaction.type == discord.InteractionType.component:
+                await handle_component_interaction(self, interaction)
+                return
+
+            # それ以外は無視（必要なら追加）
+        except Exception:
+            print("on_interaction error:")
+            print(traceback.format_exc())
+            # ここで落とさない（落ちると再起動ループ→429になりやすい）
 
 
+# ------------------------------
+# reminder loop
+# ------------------------------
 @tasks.loop(seconds=60, reconnect=True)
 async def reminder_loop(bot: MyClient):
     if not bot.is_ready() or bot.is_closed():
         return
     try:
         await bot.dm.send_3min_reminders(bot)
-    except Exception as e:
-        print("reminder_loop error:", repr(e))
+    except Exception:
+        print("reminder_loop error:")
         print(traceback.format_exc())
 
 
 async def run_bot_once(token: str):
-    """
-    1回起動して、落ちたら例外を投げる（再起動は main.py がやる）
-    """
     client = MyClient()
-    try:
-        await client.start(token)
-    finally:
+    await client.start(token)
+
+
+async def run_bot_forever(token: str):
+    """
+    落ちても即ループしない（429/Cloudflare回避のためバックオフ）
+    """
+    backoff = 5
+    while True:
         try:
-            if reminder_loop.is_running():
-                reminder_loop.stop()
+            await run_bot_once(token)
         except Exception:
-            pass
-        try:
-            await client.close()
-        except Exception:
-            pass
+            print("❌ bot crashed:")
+            print(traceback.format_exc())
+            print(f"⏸ retry after {backoff}s")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 300)  # 最大5分
+        else:
+            backoff = 5
