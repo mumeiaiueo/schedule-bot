@@ -1,36 +1,16 @@
+# commands/setup_channel.py
 import discord
 from discord import app_commands
-from views.time_picker_view import DaySelect, HourSelect, MinuteSelect
-
+from views.setup_wizard import build_setup_embed, build_setup_view
 
 def register(tree: app_commands.CommandTree, dm):
 
-    @tree.command(name="setup_channel", description="UIで枠作成テスト")
+    @tree.command(name="setup_channel", description="募集枠をボタンで作成（ウィザード）")
     async def setup_channel(interaction: discord.Interaction):
-
+        # セッション初期化は main 側で持つので、ここは表示だけ
         await interaction.response.send_message(
             "📅 今日 or 明日 を選んでください",
-            view=DaySelect(callback=handle_day),
+            embed=build_setup_embed({}),
+            view=build_setup_view({}),
             ephemeral=True
-        )
-
-
-    async def handle_day(interaction: discord.Interaction, day_value: str):
-        await interaction.response.edit_message(
-            content=f"🕒 開始の『時』を選んでください（{day_value}）",
-            view=HourSelect(callback=lambda i, h: handle_hour(i, day_value, h))
-        )
-
-
-    async def handle_hour(interaction: discord.Interaction, day_value: str, hour: int):
-        await interaction.response.edit_message(
-            content=f"🕒 {hour:02d}時 を選択。次に『分』を選んでください",
-            view=MinuteSelect(hour, callback=lambda i, h, m: handle_minute(i, day_value, h, m))
-        )
-
-
-    async def handle_minute(interaction: discord.Interaction, day_value: str, hour: int, minute: int):
-        await interaction.response.edit_message(
-            content=f"✅ 開始時刻：{hour:02d}:{minute:02d}（{day_value}）",
-            view=None
         )
