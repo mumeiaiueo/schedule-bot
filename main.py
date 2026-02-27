@@ -1,5 +1,5 @@
-# main.py  ✅ 完全コピペ版
-print("🔥 BOOT MARKER v2026-02-24-stable-reminder FULL v3 🔥")
+# main.py  ✅ 完全コピペ版（FIX: slash command処理）
+print("🔥 BOOT MARKER v2026-02-24-stable-reminder FULL v3-FIX 🔥")
 
 import asyncio
 import os
@@ -58,7 +58,6 @@ async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral
         else:
             await interaction.response.send_message(content, ephemeral=ephemeral)
     except Exception:
-        # 最後の砦（ここで落とさない）
         pass
 
 
@@ -100,9 +99,8 @@ class MyClient(discord.Client):
 
     async def on_interaction(self, interaction: discord.Interaction):
         """
-        ✅ ここがボタン/セレクト処理の本体
-        - component(ボタン/セレクト)は custom_id を自前処理
-        - それ以外(スラッシュコマンド等)は tree に処理させる
+        ✅ ボタン/セレクトは custom_id を自前処理
+        ✅ スラッシュコマンド等は discord.py に処理させる（super）
         """
         try:
             # 1) ボタン / セレクト
@@ -127,14 +125,12 @@ class MyClient(discord.Client):
                     panel_id = int(parts[2])
                     slot_id = int(parts[3])
 
-                    # 予約トグル
                     ok, msg = await self.dm.toggle_reserve(
                         slot_id,
                         str(interaction.user.id),
                         interaction.user.display_name,
                     )
 
-                    # 表示更新
                     await self.dm.render_panel(self, panel_id)
                     await safe_send(interaction, msg, ephemeral=True)
                     return
@@ -143,7 +139,6 @@ class MyClient(discord.Client):
                 # panel:breaktoggle:<panel_id>
                 # -------------------------
                 if custom_id.startswith("panel:breaktoggle:"):
-                    # 管理者(または管理ロール)だけ許可 → ここはひとまず管理者
                     if not _is_admin(interaction):
                         await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
                         return
@@ -155,15 +150,12 @@ class MyClient(discord.Client):
 
                     panel_id = int(parts[2])
 
-                    # 休憩選択UIを表示
                     view = await self.dm.build_break_select_view(panel_id)
 
-                    # 先にメッセージ返してから followup で view を出す（安定）
                     await safe_send(interaction, "⌚️ 休憩にする/解除する時間を選んでね👇", ephemeral=True)
                     try:
                         await interaction.followup.send(view=view, ephemeral=True)
                     except Exception:
-                        # followupが失敗しても落とさない
                         pass
                     return
 
@@ -197,10 +189,8 @@ class MyClient(discord.Client):
                 # 想定外 custom_id
                 return
 
-            # 2) スラッシュコマンド等（discord.py が処理）
-            if interaction.type == discord.InteractionType.application_command:
-                await self.tree._from_interaction(interaction)
-                return
+            # 2) スラッシュコマンド等（discord.py に任せる）
+            await super().on_interaction(interaction)
 
         except Exception as e:
             print("on_interaction error:", repr(e))
