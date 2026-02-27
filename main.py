@@ -1,6 +1,6 @@
-# main.py（STABLE RUN MODE + "Application did not respond"対策）
-print("🔥 BOOT MARKER v2026-02-27 STABLE RUN MODE + RESP FIX 🔥")
+print("🔥 BOOT MARKER v2026-02-27 NO-GUILD_ID AUTO-GUILD-SYNC 🔥")
 
+import asyncio
 import os
 import socket
 import traceback
@@ -23,11 +23,10 @@ from views.setup_wizard import build_setup_embed, build_setup_view
 
 load_dotenv()
 
-TOKEN = (os.getenv("DISCORD_TOKEN") or "").strip()
-SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").strip()
+TOKEN = os.getenv("DISCORD_TOKEN")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
 
 intents = discord.Intents.default()
-JST = timezone(timedelta(hours=9))
 
 
 def supabase_host_from_url(url: str | None) -> str | None:
@@ -45,7 +44,6 @@ def _is_admin(interaction: discord.Interaction) -> bool:
 
 
 async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
-    # 3秒制限回避（component用）
     try:
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=ephemeral)
@@ -68,51 +66,89 @@ class MyClient(discord.Client):
         super().__init__(intents=intents)
         self.tree = discord.app_commands.CommandTree(self)
         self.dm = DataManager()
-        self._synced = False
 
         # setupウィザード状態（ユーザーごと）
         self.setup_state: dict[int, dict] = {}
 
-        async def setup_hook(self):
-            register_setup(self.tree, self.dm)
-            register_reset(self.tree, self.dm)
-            register_remind(self.tree, self.dm)
-            register_notify(self.tree, self.dm)
-            register_notify_panel(self.tree, self.dm)
-            register_manager_role(self.tree, self.dm)
+        self._synced_once = False
 
-        # ✅ 追加：スラッシュコマンドの例外を必ずログ＆返信する（超重要）
-        @self.tree.error
-        async def on_app_command_error(interaction: discord.Interaction, error: Exception):
-            # CommandInvokeError の中身（元の例外）を取り出す
-            original = getattr(error, "original", None)
+    async def setup_hook(self):
+        # コマンド登録（関数内で tree.command してる想定）
+        register_setup(self.tree, self.dm)
+        register_reset(self.tree, self.dm)
+        register_remind(self.tree, self.dm)
+        register_notify(self.tree, self.dm)
+        register_notify_panel(self.tree, self.dm)
+        register_manager_role(self.tree, self.dm)
 
-            print("❌ APP_COMMAND_ERROR:", repr(error))
-            if original:
-                print("❌ ORIGINAL:", repr(original))
-            print(traceback.format_exc())
+    async def on_ready(self):
+        print(f"✅ Logged in as {self.user}")
 
-            # 3秒で「反応しません」にならないよう、できるだけ返す
+        # ✅ GUILD_ID不要：参加中の全ギルドへ即同期（毎回1回だけ）
+        if not self._synced_once:
+            self._synced_once = True
             try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        f"❌ コマンドエラー: {type(original or error).__name__}\n{repr(original or error)}",
-                        ephemeral=True
-                    )
-                else:
-                    await interaction.followup.send(
-                        f"❌ コマンドエラー: {type(original or error).__name__}\n{repr(original or error)}",
-                        ephemeral=True
-                    )
-            except Exception:
-                pass
+                # 参加ギルド分、guild sync（即反映）
+                for g in list(self.guilds):
+                    try:
+                        await self.tree.sync(guild=discord.Object(id=g.id))
+                        print(f"✅ commands synced (guild): {g.name} / {g.id}")
+                    except Exception as e:
+                        print(f"⚠️ guild sync failed: {g.name} / {g.id} :", repr(e))
+
+                # 登録名を表示
+                try:
+                    cmds = self.tree.get_commands()
+                    print("✅ registered commands:", [c.name for c in cmds])
+                except Exception:
+                    pass
+
+            except Exception as e:
+                print("⚠️ sync error:", repr(e))
+                print(traceback.format_exc())
+
+        if not reminder_loop.is_running():
+            reminder_loop.start(self)
+
+    def _get_setup_state(self, user_id: int) -> dict:
+        st = self.setup_state.get(user_id)
+        if st is None:
+            st = {
+                "day": None,
+                "start_hour": None,
+                "start_min": None,
+                "end_hour": None,
+                "end_min": None,
+                "start": None,
+                "end": None,
+                "interval": None,
+                "notify_channel_id": None,
+                "everyone": False,
+                "title": None,
+            }
+            self.setup_state[user_id] = st
+        return st
+
+    async def _refresh_setup(self, interaction: discord.Interaction):
+        st = self._get_setup_state(interaction.user.id)
+        embed = build_setup_embed(st)
+        view = build_setup_view(st)
+        try:
+            await interaction.message.edit(embed=embed, view=view)
+        except Exception:
+            pass
 
     async def on_interaction(self, interaction: discord.Interaction):
+        """
+        ✅ 超重要：
+        - application_command(スラッシュ) は “標準処理に任せる”
+          → これを壊すと「アプリケーションが反応しません」が出やすい
+        - component(ボタン/セレクト) だけここで処理
+        """
         try:
-            # ✅ ここが重要：スラッシュは公式APIで処理
+            # スラッシュ等は標準へ（これが安定）
             if interaction.type == discord.InteractionType.application_command:
-                await self.tree.process_interaction(interaction)
-                return
+                return await super().on_interaction(interaction)
 
             # component以外は無視
             if interaction.type != discord.InteractionType.component:
@@ -122,20 +158,18 @@ class MyClient(discord.Client):
             custom_id = data.get("custom_id")
             values = data.get("values") or []
 
-            if not custom_id or not isinstance(custom_id, str):
+            if not custom_id:
                 return
 
-            # componentは先にdefer（3秒対策）
             await safe_defer(interaction, ephemeral=True)
 
             # -----------------------------
-            # panel（予約ボタン）
+            # panelボタン
             # -----------------------------
             if custom_id.startswith("panel:slot:"):
                 parts = custom_id.split(":")
                 if len(parts) != 4:
-                    await safe_send(interaction, "❌ ボタン形式が不正です")
-                    return
+                    return await safe_send(interaction, "❌ ボタン形式が不正です")
 
                 panel_id = int(parts[2])
                 slot_id = int(parts[3])
@@ -146,8 +180,7 @@ class MyClient(discord.Client):
                     user_name=getattr(interaction.user, "display_name", str(interaction.user)),
                 )
                 await self.dm.render_panel(self, panel_id)
-                await safe_send(interaction, msg)
-                return
+                return await safe_send(interaction, msg)
 
             # -----------------------------
             # setupウィザード
@@ -178,7 +211,7 @@ class MyClient(discord.Client):
                 elif custom_id == "setup:everyone:toggle":
                     st["everyone"] = not st["everyone"]
 
-                # 表示用まとめ
+                # 文字列化
                 if st.get("start_hour") and st.get("start_min"):
                     st["start"] = f"{st['start_hour']}:{st['start_min']}"
                 if st.get("end_hour") and st.get("end_min"):
@@ -198,6 +231,7 @@ class MyClient(discord.Client):
                         await self._refresh_setup(interaction)
                         return
 
+                    JST = timezone(timedelta(hours=9))
                     today = datetime.now(JST).date()
                     day = today if st["day"] == "today" else today + timedelta(days=1)
 
@@ -232,7 +266,6 @@ class MyClient(discord.Client):
                     return
 
                 await self._refresh_setup(interaction)
-                await safe_send(interaction, "✅ 更新")
                 return
 
             await safe_send(interaction, f"unknown custom_id: {custom_id}")
@@ -240,10 +273,7 @@ class MyClient(discord.Client):
         except Exception as e:
             print("on_interaction error:", repr(e))
             print(traceback.format_exc())
-            try:
-                await safe_send(interaction, f"❌ エラー: {repr(e)}")
-            except Exception:
-                pass
+            await safe_send(interaction, f"❌ エラー: {repr(e)}")
 
 
 client = MyClient()
@@ -262,7 +292,7 @@ async def reminder_loop(bot: MyClient):
 @reminder_loop.before_loop
 async def before_reminder_loop():
     await client.wait_until_ready()
-    await asyncio_sleep(5)
+    await asyncio.sleep(5)
 
     host = supabase_host_from_url(SUPABASE_URL)
     if host:
@@ -273,12 +303,10 @@ async def before_reminder_loop():
             print("⚠️ DNS check failed:", repr(e))
 
 
-async def asyncio_sleep(sec: int):
-    # discord.pyが動いてるloop内で安全にsleep
-    await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=sec))
-
-
-if __name__ == "__main__":
+async def main():
     if not TOKEN:
-        raise RuntimeError("DISCORD_TOKEN 未設定（RenderのEnvironmentを確認）")
-    client.run(TOKEN)
+        raise RuntimeError("DISCORD_TOKEN 未設定")
+    await client.start(TOKEN)
+
+
+asyncio.run(main())
