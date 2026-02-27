@@ -1,8 +1,6 @@
-# views/panel_view.py
+# views/panel_view.py  ✅ B方式（main.py が custom_id を処理）用
 import discord
-from typing import List, Dict, Optional
-
-from utils.time_utils import fmt_hm
+from typing import List, Dict
 
 
 def build_panel_embed(title: str | None, day_text: str, lines: list[str]):
@@ -14,118 +12,53 @@ def build_panel_embed(title: str | None, day_text: str, lines: list[str]):
     return e
 
 
-async def _respond(interaction: discord.Interaction, content: str, *, ephemeral: bool = True, view=None):
-    """二重返信でも落ちない send"""
-    try:
-        await interaction.response.send_message(content, ephemeral=ephemeral, view=view)
-    except discord.InteractionResponded:
-        await interaction.followup.send(content, ephemeral=ephemeral, view=view)
+class PanelView(discord.ui.View):
+    """
+    ✅ 重要：callback を一切持たない
+    → 押された時の処理は main.py の on_interaction がやる
 
+    custom_id:
+      panel:slot:<panel_id>:<slot_id>
+      panel:breaktoggle:<panel_id>
+      panel:breakselect:<panel_id>   (Select)
+    """
+    def __init__(self, _dm_unused, panel_id: int, buttons: List[Dict]):
+        super().__init__(timeout=None)
 
-def _is_admin(interaction: discord.Interaction) -> bool:
-    m = interaction.user
-    return isinstance(m, discord.Member) and m.guild_permissions.administrator
+        # ✅ 休憩ボタンを入れるので、予約ボタンは最大24個（合計25）
+        slot_buttons = buttons[:24]
 
+        # slot buttons（最大24） / 5列
+        for i, b in enumerate(slot_buttons):
+            self.add_item(discord.ui.Button(
+                label=b["label"],
+                style=b["style"],
+                disabled=bool(b["disabled"]),
+                custom_id=f"panel:slot:{panel_id}:{int(b['slot_id'])}",
+                row=i // 5,
+            ))
 
-class SlotButton(discord.ui.Button):
-    def __init__(self, dm, panel_id: int, slot_id: int, label: str, style: discord.ButtonStyle, disabled: bool, row: int):
-        super().__init__(
-            label=label,
-            style=style,
-            disabled=disabled,
-            custom_id=f"panel:slot:{panel_id}:{slot_id}",
-            row=row
-        )
-        self.dm = dm
-        self.panel_id = panel_id
-        self.slot_id = slot_id
-
-    async def callback(self, interaction: discord.Interaction):
-        ok, msg = await self.dm.toggle_reserve(
-            slot_id=int(self.slot_id),
-            user_id=str(interaction.user.id),
-            user_name=getattr(interaction.user, "display_name", str(interaction.user)),
-        )
-        # パネル再描画（表示更新）
-        await self.dm.render_panel(interaction.client, int(self.panel_id))
-        await _respond(interaction, msg, ephemeral=True)
-
-
-class BreakToggleButton(discord.ui.Button):
-    def __init__(self, dm, panel_id: int, row: int):
-        super().__init__(
+        # 管理者用：休憩切替（最後の1枠）
+        row = min(4, (len(slot_buttons) // 5))
+        self.add_item(discord.ui.Button(
             label="🛠 休憩切替（管理者）",
             style=discord.ButtonStyle.secondary,
             custom_id=f"panel:breaktoggle:{panel_id}",
-            row=row
-        )
-        self.dm = dm
-        self.panel_id = panel_id
-
-    async def callback(self, interaction: discord.Interaction):
-        if not _is_admin(interaction):
-            await _respond(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
-            return
-
-        view = await self.dm.build_break_select_view(int(self.panel_id))
-        await _respond(interaction, "休憩にする/解除する時間を選んでね👇", ephemeral=True, view=view)
+            row=row,
+        ))
 
 
-class BreakSelect(discord.ui.Select):
-    def __init__(self, dm, panel_id: int, options: List[discord.SelectOption]):
-        super().__init__(
+class BreakSelectView(discord.ui.View):
+    """
+    休憩選択セレクト（最大25）
+    custom_id: panel:breakselect:<panel_id>
+    """
+    def __init__(self, _dm_unused, panel_id: int, options: List[discord.SelectOption]):
+        super().__init__(timeout=60)
+        self.add_item(discord.ui.Select(
             placeholder="休憩にする/解除する時間を選んで",
             min_values=1,
             max_values=1,
             options=options[:25],
             custom_id=f"panel:breakselect:{panel_id}",
-        )
-        self.dm = dm
-        self.panel_id = panel_id
-
-    async def callback(self, interaction: discord.Interaction):
-        if not _is_admin(interaction):
-            await _respond(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
-            return
-
-        if not self.values:
-            await _respond(interaction, "❌ 選択値が取得できませんでした", ephemeral=True)
-            return
-
-        slot_id = int(self.values[0])
-        ok, msg = await self.dm.toggle_break_slot(int(self.panel_id), slot_id)
-
-        # パネル再描画（表示更新）
-        await self.dm.render_panel(interaction.client, int(self.panel_id))
-        await _respond(interaction, msg, ephemeral=True)
-
-
-class BreakSelectView(discord.ui.View):
-    def __init__(self, dm, panel_id: int, options: List[discord.SelectOption]):
-        super().__init__(timeout=60)
-        self.add_item(BreakSelect(dm, panel_id, options))
-
-
-class PanelView(discord.ui.View):
-    def __init__(self, dm, panel_id: int, buttons: List[Dict]):
-        super().__init__(timeout=None)
-
-        # ✅ 休憩ボタンを入れるので、予約ボタンは最大24個にする
-        slot_buttons = buttons[:24]
-
-        # slot buttons / 5列
-        for i, b in enumerate(slot_buttons):
-            self.add_item(SlotButton(
-                dm=dm,
-                panel_id=panel_id,
-                slot_id=int(b["slot_id"]),
-                label=b["label"],
-                style=b["style"],
-                disabled=bool(b["disabled"]),
-                row=i // 5,
-            ))
-
-        # ✅ 休憩切替ボタン（最後の1枠）
-        # 24個なら row は最大 4 で収まる
-        row = min(4, (len(slot_buttons) // 5))
-        self.add_item(BreakToggleButton(dm=dm, panel_id=panel_id, row=row))
+        ))
