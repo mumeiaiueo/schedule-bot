@@ -390,27 +390,59 @@ async def set_manager_role_id(self, guild_id: str, role_id: int | None):
         await self._db(work_update)
         return (True, "休憩にしました" if new_val else "休憩を解除しました")
 
-    # ---------- 3min reminders ----------
-    async def send_3min_reminders(self, bot: discord.Client):
-        self._require_db()
+        # ---------- 3min reminders ----------
+    async def send_3min_reminders(self, bot):
+        print("⏰ send_3min_reminders running")
 
-        # bot終了中/未接続なら何もしない
         try:
-            if bot.is_closed() or (hasattr(bot, "is_ready") and not bot.is_ready()):
+            if bot.is_closed():
                 return
         except Exception:
             return
 
+        from utils.time_utils import jst_now, from_utc_iso, fmt_hm
+
         def work_rows():
-            return sb.table("slots").select("*") \
-                .eq("notified", False) \
-                .not_.is_("reserver_user_id", "null") \
-                .execute().data or []
+            return (
+                sb.table("slots")
+                .select("*")
+                .eq("notified", False)
+                .not_.is_("reserver_user_id", "null")
+                .execute()
+                .data
+                or []
+            )
 
         try:
             rows = await self._db(work_rows)
-        except Exception:
+        except Exception as e:
+            print("reminder DB error:", e)
             return
+
+        now = jst_now()
+
+        for slot in rows:
+            start = from_utc_iso(slot["start_at"])
+            diff = (start - now).total_seconds()
+
+            if not (160 <= diff <= 220):
+                continue
+
+            try:
+                notify_ch = bot.get_channel(int(slot["channel_id"]))
+                if not notify_ch:
+                    continue
+
+                uid = str(slot["reserver_user_id"])
+                await notify_ch.send(f"⏰ 3分前：{fmt_hm(start)} の枠です <@{uid}>")
+
+                def mark_notified():
+                    sb.table("slots").update({"notified": True}).eq("id", slot["id"]).execute()
+
+                await self._db(mark_notified)
+
+            except Exception as e:
+                print("reminder send error:", e)
 
         now = jst_now()
 
