@@ -1,5 +1,5 @@
-# main.py （Render安定版：client.run 方式 / Session is closed 対策）
-print("🔥 BOOT MARKER v2026-02-27 STABLE RUN MODE 🔥")
+# main.py（STABLE RUN MODE + "Application did not respond"対策）
+print("🔥 BOOT MARKER v2026-02-27 STABLE RUN MODE + RESP FIX 🔥")
 
 import os
 import socket
@@ -19,7 +19,6 @@ from commands.notify import register as register_notify
 from commands.notify_panel import register as register_notify_panel
 from commands.set_manager_role import register as register_manager_role
 
-# setup wizard（あなたのファイルがある前提）
 from views.setup_wizard import build_setup_embed, build_setup_view
 
 load_dotenv()
@@ -28,7 +27,6 @@ TOKEN = (os.getenv("DISCORD_TOKEN") or "").strip()
 SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").strip()
 
 intents = discord.Intents.default()
-
 JST = timezone(timedelta(hours=9))
 
 
@@ -47,7 +45,7 @@ def _is_admin(interaction: discord.Interaction) -> bool:
 
 
 async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
-    # 3秒制限回避。既に応答済みなら何もしない
+    # 3秒制限回避（component用）
     try:
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=ephemeral)
@@ -56,7 +54,6 @@ async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True
 
 
 async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
-    # 二重返信でも落ちない送信
     try:
         if interaction.response.is_done():
             await interaction.followup.send(content, ephemeral=ephemeral)
@@ -77,7 +74,6 @@ class MyClient(discord.Client):
         self.setup_state: dict[int, dict] = {}
 
     async def setup_hook(self):
-        # スラッシュコマンド登録
         register_setup(self.tree, self.dm)
         register_reset(self.tree, self.dm)
         register_remind(self.tree, self.dm)
@@ -85,8 +81,15 @@ class MyClient(discord.Client):
         register_notify_panel(self.tree, self.dm)
         register_manager_role(self.tree, self.dm)
 
+        # ✅ スラッシュで落ちた時に「応答しない」を防ぐ保険
+        @self.tree.error
+        async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+            print("⚠️ app_command error:", repr(error))
+            print(traceback.format_exc())
+            # ここで返事を返しておく（Discordの“応答しない”を防ぐ）
+            await safe_send(interaction, f"❌ コマンドエラー: {type(error).__name__}", ephemeral=True)
+
     async def on_ready(self):
-        # コマンド同期（初回のみ）
         if not self._synced:
             try:
                 await self.tree.sync()
@@ -98,7 +101,6 @@ class MyClient(discord.Client):
 
         print(f"✅ Logged in as {self.user}")
 
-        # reminder開始
         if not reminder_loop.is_running():
             reminder_loop.start(self)
 
@@ -126,21 +128,20 @@ class MyClient(discord.Client):
         embed = build_setup_embed(st)
         view = build_setup_view(st)
         try:
-            await interaction.message.edit(embed=embed, view=view)
+            # component の元メッセージ更新
+            if interaction.message:
+                await interaction.message.edit(embed=embed, view=view)
         except Exception:
             pass
 
     async def on_interaction(self, interaction: discord.Interaction):
         try:
-            # 1) スラッシュ（application_command）は tree に任せる
+            # ✅ ここが重要：スラッシュは公式APIで処理
             if interaction.type == discord.InteractionType.application_command:
-                try:
-                    await self.tree._from_interaction(interaction)  # discord.py内部だが安定
-                except Exception:
-                    pass
+                await self.tree.process_interaction(interaction)
                 return
 
-            # 2) component（ボタン/セレクト）
+            # component以外は無視
             if interaction.type != discord.InteractionType.component:
                 return
 
@@ -151,10 +152,11 @@ class MyClient(discord.Client):
             if not custom_id or not isinstance(custom_id, str):
                 return
 
+            # componentは先にdefer（3秒対策）
             await safe_defer(interaction, ephemeral=True)
 
             # -----------------------------
-            # panel（既存）
+            # panel（予約ボタン）
             # -----------------------------
             if custom_id.startswith("panel:slot:"):
                 parts = custom_id.split(":")
@@ -175,18 +177,16 @@ class MyClient(discord.Client):
                 return
 
             # -----------------------------
-            # setupウィザード（今日/明日、開始/終了、間隔、通知ch必須）
+            # setupウィザード
             # -----------------------------
             if custom_id.startswith("setup:"):
                 st = self._get_setup_state(interaction.user.id)
 
-                # day
                 if custom_id == "setup:day:today":
                     st["day"] = "today"
                 elif custom_id == "setup:day:tomorrow":
                     st["day"] = "tomorrow"
 
-                # start/end hour/min
                 elif custom_id == "setup:start_hour" and values:
                     st["start_hour"] = values[0]
                 elif custom_id == "setup:start_min" and values:
@@ -196,29 +196,22 @@ class MyClient(discord.Client):
                 elif custom_id == "setup:end_min" and values:
                     st["end_min"] = values[0]
 
-                # interval 20/25/30
                 elif custom_id.startswith("setup:interval:"):
                     st["interval"] = int(custom_id.split(":")[-1])
 
-                # notify channel（必須）
                 elif custom_id == "setup:notify_channel" and values:
                     st["notify_channel_id"] = str(values[0])
 
-                # everyone toggle（任意）
                 elif custom_id == "setup:everyone:toggle":
                     st["everyone"] = not st["everyone"]
 
-                # title（任意）※もし入力UIが別であるならここに繋ぐ
-                # 例：setup:title:xxx みたいなcustom_idにして st["title"]=...
-                # 今はUI側に合わせる
-
-                # 表示用の時刻まとめ
+                # 表示用まとめ
                 if st.get("start_hour") and st.get("start_min"):
                     st["start"] = f"{st['start_hour']}:{st['start_min']}"
                 if st.get("end_hour") and st.get("end_min"):
                     st["end"] = f"{st['end_hour']}:{st['end_min']}"
 
-                # 作成ボタン
+                # 作成
                 if custom_id == "setup:create":
                     missing = []
                     if not st.get("day"): missing.append("今日/明日")
@@ -240,12 +233,9 @@ class MyClient(discord.Client):
 
                     start_at = datetime(day.year, day.month, day.day, sh, sm, tzinfo=JST)
                     end_at = datetime(day.year, day.month, day.day, eh, em, tzinfo=JST)
-
-                    # 日跨ぎ許可（終了が開始より小さければ翌日にする）
                     if end_at <= start_at:
                         end_at += timedelta(days=1)
 
-                    # create
                     res = await self.dm.create_panel(
                         guild_id=str(interaction.guild_id),
                         channel_id=str(interaction.channel_id),
@@ -265,19 +255,13 @@ class MyClient(discord.Client):
 
                     await self.dm.render_panel(self, int(res["panel_id"]))
                     self.setup_state.pop(interaction.user.id, None)
-
-                    # everyoneを使うなら（任意）：ここで通知チャンネルに投げる等
-                    # st["everyone"] が True なら @everyone を付けるなどは DataManager側で対応でもOK
-
                     await safe_send(interaction, "✅ 作成完了")
                     return
 
-                # 通常更新
                 await self._refresh_setup(interaction)
                 await safe_send(interaction, "✅ 更新")
                 return
 
-            # 想定外
             await safe_send(interaction, f"unknown custom_id: {custom_id}")
 
         except Exception as e:
@@ -305,7 +289,7 @@ async def reminder_loop(bot: MyClient):
 @reminder_loop.before_loop
 async def before_reminder_loop():
     await client.wait_until_ready()
-    await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=5))
+    await asyncio_sleep(5)
 
     host = supabase_host_from_url(SUPABASE_URL)
     if host:
@@ -316,9 +300,12 @@ async def before_reminder_loop():
             print("⚠️ DNS check failed:", repr(e))
 
 
+async def asyncio_sleep(sec: int):
+    # discord.pyが動いてるloop内で安全にsleep
+    await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=sec))
+
+
 if __name__ == "__main__":
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN 未設定（RenderのEnvironmentを確認）")
-
-    # ✅ ここがポイント：asyncio.run を使わず、discord.py推奨の run を使う
     client.run(TOKEN)
