@@ -1,5 +1,5 @@
 # main.py
-print("🔥 BOOT MARKER v2026-02-27 B-mode stable FINAL COMPLETE v2 🔥")
+print("🔥 BOOT MARKER v2026-02-27 B-mode stable FINAL COMPLETE v3 (restart-safe) 🔥")
 
 import asyncio
 import os
@@ -19,7 +19,6 @@ from commands.remind_channel import register as register_remind
 from commands.notify import register as register_notify
 from commands.notify_panel import register as register_notify_panel
 from commands.set_manager_role import register as register_manager_role
-
 from views.setup_wizard import build_setup_embed, build_setup_view
 
 load_dotenv()
@@ -28,7 +27,6 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 
 intents = discord.Intents.default()
-
 JST = timezone(timedelta(hours=9))
 
 
@@ -47,7 +45,6 @@ def _is_admin(interaction: discord.Interaction) -> bool:
 
 
 async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
-    """二重返信でも落ちない送信"""
     try:
         if interaction.response.is_done():
             await interaction.followup.send(content, ephemeral=ephemeral)
@@ -57,6 +54,30 @@ async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral
         pass
 
 
+# ✅ tasks.loop はグローバルでOK（bot を引数でもらう）
+@tasks.loop(seconds=60, reconnect=True)
+async def reminder_loop(bot):
+    if not bot.is_ready() or bot.is_closed():
+        return
+
+    loop = asyncio.get_running_loop()
+    if bot._reminder_pause_until and loop.time() < bot._reminder_pause_until:
+        return
+
+    try:
+        await bot.dm.send_3min_reminders(bot)
+        bot._reminder_fail_count = 0
+        bot._reminder_pause_until = 0.0
+    except Exception as e:
+        bot._reminder_fail_count += 1
+        print("reminder_loop error:", repr(e))
+        print(traceback.format_exc())
+
+        backoff = min(600, 60 * (2 ** (bot._reminder_fail_count - 1)))
+        bot._reminder_pause_until = loop.time() + backoff
+        print(f"⏸ reminder paused for {backoff}s (fail_count={bot._reminder_fail_count})")
+
+
 class MyClient(discord.Client):
     def __init__(self):
         super().__init__(intents=intents)
@@ -64,15 +85,18 @@ class MyClient(discord.Client):
         self.dm = DataManager()
         self._synced = False
 
-        # setupウィザード状態（ユーザーごと）
+        # setup wizard state（ユーザーごと）
         self.setup_state: dict[int, dict] = {}
 
-        # reminderバックオフ
+        # reminder backoff
         self._reminder_fail_count = 0
         self._reminder_pause_until = 0.0
 
+        # DNS check 1回だけ
+        self._dns_checked = False
+
     async def setup_hook(self):
-        register_setup(self.tree, self.dm)          # /setup_channel
+        register_setup(self.tree, self.dm)
         register_reset(self.tree, self.dm)
         register_remind(self.tree, self.dm)
         register_notify(self.tree, self.dm)
@@ -80,6 +104,17 @@ class MyClient(discord.Client):
         register_manager_role(self.tree, self.dm)
 
     async def on_ready(self):
+        # DNS check（ログ用・落とさない）
+        if (not self._dns_checked) and SUPABASE_URL:
+            self._dns_checked = True
+            host = supabase_host_from_url(SUPABASE_URL)
+            if host:
+                try:
+                    ip = socket.gethostbyname(host)
+                    print(f"✅ DNS check OK: {host} -> {ip}")
+                except Exception as e:
+                    print("⚠️ DNS check failed:", repr(e))
+
         if not self._synced:
             try:
                 await self.tree.sync()
@@ -101,34 +136,29 @@ class MyClient(discord.Client):
         st = self.setup_state.get(user_id)
         if st is None:
             st = {
-                "day": None,                 # today/tomorrow
+                "day": None,
                 "start_h": None, "start_m": None,
-                "end_h": None,   "end_m": None,
-                "interval": None,            # 20/25/30
-                "notify_channel_id": None,   # 必須
-                "everyone": False,           # 任意
-                "title": None,               # 任意（今回は入力UI省略、あとで追加可）
+                "end_h": None, "end_m": None,
+                "interval": None,
+                "notify_channel_id": None,
+                "everyone": False,
+                "title": None,
             }
             self.setup_state[user_id] = st
         return st
 
     async def _edit_setup_ephemeral(self, interaction: discord.Interaction):
-        """ephemeral メッセージは message.edit じゃなく edit_original_response"""
         st = self._get_setup_state(interaction.user.id)
         embed = build_setup_embed(st)
         view = build_setup_view(st)
         try:
             await interaction.edit_original_response(embed=embed, view=view)
         except Exception:
-            # ここで落とさない
             pass
 
-    # -------------------------
-    # interaction router
-    # -------------------------
     async def on_interaction(self, interaction: discord.Interaction):
         try:
-            # 1) Slash / autocomplete などは tree に任せる
+            # slash系は tree に任せる
             if interaction.type in (
                 discord.InteractionType.application_command,
                 discord.InteractionType.autocomplete,
@@ -142,7 +172,6 @@ class MyClient(discord.Client):
                     pass
                 return
 
-            # 2) Component（ボタン/セレクト）
             if interaction.type != discord.InteractionType.component:
                 return
 
@@ -152,23 +181,22 @@ class MyClient(discord.Client):
             if not custom_id or not isinstance(custom_id, str):
                 return
 
-            print("[COMPONENT]", custom_id)
-
-            # ✅ まず3秒制限回避（componentは message update でACKする）
+            # ACK（3秒回避）
             try:
                 if not interaction.response.is_done():
-                    await interaction.response.defer()  # ここ重要：ephemeralを付けない
+                    await interaction.response.defer()
             except Exception:
                 pass
 
             # -----------------------------
-            # 既存：panel ボタン
+            # panel buttons
             # -----------------------------
             if custom_id.startswith("panel:slot:"):
                 parts = custom_id.split(":")
                 if len(parts) != 4:
                     await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
                     return
+
                 panel_id = int(parts[2])
                 slot_id = int(parts[3])
 
@@ -178,8 +206,6 @@ class MyClient(discord.Client):
                     user_name=getattr(interaction.user, "display_name", str(interaction.user)),
                 )
                 await self.dm.render_panel(self, panel_id)
-
-                # component defer してるので followup でOK
                 await safe_send(interaction, msg, ephemeral=True)
                 return
 
@@ -193,11 +219,7 @@ class MyClient(discord.Client):
                     return
                 panel_id = int(parts[2])
                 view = await self.dm.build_break_select_view(panel_id)
-                await interaction.followup.send(
-                    "⌚️ 休憩にする/解除する時間を選んでね👇",
-                    view=view,
-                    ephemeral=True,
-                )
+                await interaction.followup.send("⌚️ 休憩を選んでね👇", view=view, ephemeral=True)
                 return
 
             if custom_id.startswith("panel:breakselect:"):
@@ -205,11 +227,8 @@ class MyClient(discord.Client):
                     await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
                     return
                 parts = custom_id.split(":")
-                if len(parts) != 3:
-                    await safe_send(interaction, "❌ セレクト形式が不正です", ephemeral=True)
-                    return
-                if not values:
-                    await safe_send(interaction, "❌ 選択値が取得できませんでした", ephemeral=True)
+                if len(parts) != 3 or not values:
+                    await safe_send(interaction, "❌ セレクトが不正です", ephemeral=True)
                     return
                 panel_id = int(parts[2])
                 slot_id = int(values[0])
@@ -219,7 +238,7 @@ class MyClient(discord.Client):
                 return
 
             # -----------------------------
-            # setup wizard（今日/明日・時刻・間隔・通知ch 必須 / everyone 任意）
+            # setup wizard
             # -----------------------------
             if custom_id.startswith("setup:"):
                 st = self._get_setup_state(interaction.user.id)
@@ -228,7 +247,6 @@ class MyClient(discord.Client):
                     st["day"] = "today"
                 elif custom_id == "setup:day:tomorrow":
                     st["day"] = "tomorrow"
-
                 elif custom_id == "setup:start_h" and values:
                     st["start_h"] = values[0]
                 elif custom_id == "setup:start_m" and values:
@@ -237,40 +255,28 @@ class MyClient(discord.Client):
                     st["end_h"] = values[0]
                 elif custom_id == "setup:end_m" and values:
                     st["end_m"] = values[0]
-
                 elif custom_id.startswith("setup:interval:"):
                     st["interval"] = int(custom_id.split(":")[-1])
-
                 elif custom_id == "setup:notify_ch" and values:
                     st["notify_channel_id"] = str(values[0])
-
                 elif custom_id == "setup:everyone:toggle":
                     st["everyone"] = not bool(st["everyone"])
 
                 elif custom_id == "setup:cancel":
                     self.setup_state.pop(interaction.user.id, None)
                     try:
-                        await interaction.edit_original_response(
-                            content="✅ キャンセルしました",
-                            embed=None,
-                            view=None,
-                        )
+                        await interaction.edit_original_response(content="✅ キャンセルしました", embed=None, view=None)
                     except Exception:
                         pass
                     return
 
                 elif custom_id == "setup:create":
                     missing = []
-                    if not st.get("day"):
-                        missing.append("今日/明日")
-                    if not (st.get("start_h") and st.get("start_m")):
-                        missing.append("開始時刻")
-                    if not (st.get("end_h") and st.get("end_m")):
-                        missing.append("終了時刻")
-                    if not st.get("interval"):
-                        missing.append("間隔(20/25/30)")
-                    if not st.get("notify_channel_id"):
-                        missing.append("通知チャンネル")
+                    if not st.get("day"): missing.append("今日/明日")
+                    if not (st.get("start_h") and st.get("start_m")): missing.append("開始")
+                    if not (st.get("end_h") and st.get("end_m")): missing.append("終了")
+                    if not st.get("interval"): missing.append("間隔")
+                    if not st.get("notify_channel_id"): missing.append("通知チャンネル")
 
                     if missing:
                         await interaction.followup.send("❌ 未入力: " + " / ".join(missing), ephemeral=True)
@@ -280,8 +286,8 @@ class MyClient(discord.Client):
                     today = datetime.now(JST).date()
                     day = today if st["day"] == "today" else today + timedelta(days=1)
 
-                    sh = int(st["start_h"]); sm = int(st["start_m"])
-                    eh = int(st["end_h"]);   em = int(st["end_m"])
+                    sh, sm = int(st["start_h"]), int(st["start_m"])
+                    eh, em = int(st["end_h"]), int(st["end_m"])
 
                     start_at = datetime(day.year, day.month, day.day, sh, sm, tzinfo=JST)
                     end_at = datetime(day.year, day.month, day.day, eh, em, tzinfo=JST)
@@ -310,21 +316,14 @@ class MyClient(discord.Client):
                     self.setup_state.pop(interaction.user.id, None)
 
                     try:
-                        await interaction.edit_original_response(
-                            content="✅ 作成完了！",
-                            embed=None,
-                            view=None,
-                        )
+                        await interaction.edit_original_response(content="✅ 作成完了！", embed=None, view=None)
                     except Exception:
                         pass
-
                     return
 
-                # 画面更新
                 await self._edit_setup_ephemeral(interaction)
                 return
 
-            # 想定外
             await safe_send(interaction, f"unknown custom_id: {custom_id}", ephemeral=True)
 
         except Exception as e:
@@ -336,59 +335,25 @@ class MyClient(discord.Client):
                 pass
 
 
-client = MyClient()
-
-
-@tasks.loop(seconds=60, reconnect=True)
-async def reminder_loop(bot: MyClient):
-    if not bot.is_ready() or bot.is_closed():
-        return
-
-    loop = asyncio.get_running_loop()
-    if bot._reminder_pause_until and loop.time() < bot._reminder_pause_until:
-        return
-
-    try:
-        await bot.dm.send_3min_reminders(bot)
-        bot._reminder_fail_count = 0
-        bot._reminder_pause_until = 0.0
-    except Exception as e:
-        bot._reminder_fail_count += 1
-        print("reminder_loop error:", repr(e))
-        print(traceback.format_exc())
-
-        backoff = min(600, 60 * (2 ** (bot._reminder_fail_count - 1)))
-        bot._reminder_pause_until = loop.time() + backoff
-        print(f"⏸ reminder paused for {backoff}s (fail_count={bot._reminder_fail_count})")
-
-
-@reminder_loop.before_loop
-async def before_reminder_loop():
-    await client.wait_until_ready()
-    await asyncio.sleep(5)
-
-    host = supabase_host_from_url(SUPABASE_URL)
-    if host:
-        try:
-            ip = socket.gethostbyname(host)
-            print(f"✅ DNS check OK: {host} -> {ip}")
-        except Exception as e:
-            print("⚠️ DNS check failed:", repr(e))
-
-
 async def runner_forever():
     if not TOKEN or not TOKEN.strip():
         raise RuntimeError("DISCORD_TOKEN 未設定")
 
-    # ✅ 落ちても自動復帰（Renderで安定）
+    # ✅ 落ちたら “新しいClientを作り直す”
     while True:
+        bot = MyClient()
         try:
-            await client.start(TOKEN)
+            await bot.start(TOKEN)
         except Exception as e:
-            print("🔥 FATAL crash -> auto restart:", repr(e))
+            print("🔥 FATAL crash -> restart:", repr(e))
             print(traceback.format_exc())
             try:
-                await client.close()
+                if reminder_loop.is_running():
+                    reminder_loop.stop()
+            except Exception:
+                pass
+            try:
+                await bot.close()
             except Exception:
                 pass
             await asyncio.sleep(5)
