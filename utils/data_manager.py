@@ -1,4 +1,4 @@
-print("✅ LOADED data_manager.py v2026-02-27")
+print("✅ LOADED data_manager.py v2026-02-27 FIXED")
 import asyncio
 from datetime import timedelta
 import discord
@@ -19,43 +19,43 @@ class DataManager:
             raise RuntimeError("Supabaseが未接続です（SUPABASE_URL/KEY or DNS を確認）")
 
     # ---------- guild settings (manager role) ----------
-async def get_manager_role_id(self, guild_id: str):
-    self._require_db()
+    async def get_manager_role_id(self, guild_id: str):
+        self._require_db()
 
-    def work():
-        rows = (
-            sb.table("guild_settings")
-            .select("manager_role_id")
-            .eq("guild_id", int(guild_id))
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        if not rows:
-            return None
-        return rows[0].get("manager_role_id")
+        def work():
+            rows = (
+                sb.table("guild_settings")
+                .select("manager_role_id")
+                .eq("guild_id", int(guild_id))
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            if not rows:
+                return None
+            return rows[0].get("manager_role_id")
 
-    return await self._db(work)
+        return await self._db(work)
 
-async def set_manager_role_id(self, guild_id: str, role_id: int | None):
-    self._require_db()
+    async def set_manager_role_id(self, guild_id: str, role_id: int | None):
+        self._require_db()
 
-    def work():
-        sb.table("guild_settings").upsert(
-            {
-                "guild_id": int(guild_id),
-                "manager_role_id": role_id,
-                "updated_at": to_utc_iso(jst_now()),
-            },
-            on_conflict="guild_id",
-        ).execute()
+        def work():
+            # ❌ updated_at は触らない（列/トリガー差で事故るので）
+            sb.table("guild_settings").upsert(
+                {
+                    "guild_id": int(guild_id),
+                    "manager_role_id": role_id,
+                },
+                on_conflict="guild_id",
+            ).execute()
 
-    await self._db(work)
+        await self._db(work)
 
-    if role_id is None:
-        return (True, "✅ 管理ロール設定を解除しました（管理者のみ実行可能になります）")
-    return (True, "✅ 管理ロールを設定しました（このロール持ちは管理コマンド実行OK）")
+        if role_id is None:
+            return (True, "✅ 管理ロール設定を解除しました（管理者のみ実行可能になります）")
+        return (True, "✅ 管理ロールを設定しました（このロール持ちは管理コマンド実行OK）")
 
     # ---------- panels ----------
     async def create_panel(
@@ -85,8 +85,6 @@ async def set_manager_role_id(self, guild_id: str, role_id: int | None):
                     "interval_minutes": int(interval_minutes),
                     "notify_channel_id": notify_channel_id,
                     "created_by": created_by,
-
-                    # 管理者管理の通知フラグ
                     "notify_enabled": True,
                     "notify_paused": False,
                 }).execute().data
@@ -126,7 +124,6 @@ async def set_manager_role_id(self, guild_id: str, role_id: int | None):
         if inserts:
             def work_insert_slots():
                 sb.table("slots").insert(inserts).execute()
-
             await self._db(work_insert_slots)
 
         return {"ok": True, "panel_id": panel_id}
@@ -138,8 +135,10 @@ async def set_manager_role_id(self, guild_id: str, role_id: int | None):
             panels = sb.table("panels").select("id") \
                 .eq("guild_id", guild_id).eq("channel_id", channel_id).execute().data or []
             panel_ids = [p["id"] for p in panels]
+
             if panel_ids:
                 sb.table("slots").delete().in_("panel_id", panel_ids).execute()
+
             sb.table("panels").delete().eq("guild_id", guild_id).eq("channel_id", channel_id).execute()
             return len(panel_ids) > 0
 
@@ -161,8 +160,7 @@ async def set_manager_role_id(self, guild_id: str, role_id: int | None):
 
         def work_delete():
             sb.table("slots").delete().in_("panel_id", panel_ids).execute()
-            for pid in panel_ids:
-                sb.table("panels").delete().eq("id", pid).execute()
+            sb.table("panels").delete().in_("id", panel_ids).execute()
 
         await self._db(work_delete)
         return True
@@ -276,7 +274,7 @@ async def set_manager_role_id(self, guild_id: str, role_id: int | None):
         day_text = f"📅 {panel['day']}（JST） / interval {panel['interval_minutes']}min"
         title = panel.get("title") or "募集パネル"
         embed = build_panel_embed(title, day_text, lines)
-        view = PanelView(self, panel_id, buttons)  # B方式 view
+        view = PanelView(self, panel_id, buttons)
 
         mid = panel.get("panel_message_id")
         if mid:
@@ -390,22 +388,20 @@ async def set_manager_role_id(self, guild_id: str, role_id: int | None):
         await self._db(work_update)
         return (True, "休憩にしました" if new_val else "休憩を解除しました")
 
-        # ---------- 3min reminders ----------
-    async def send_3min_reminders(self, bot):
-        print("⏰ send_3min_reminders running")
+    # ---------- 3min reminders（これ1個だけ） ----------
+    async def send_3min_reminders(self, bot: discord.Client):
+        self._require_db()
 
         try:
-            if bot.is_closed():
+            if bot.is_closed() or (hasattr(bot, "is_ready") and not bot.is_ready()):
                 return
         except Exception:
             return
 
-        from utils.time_utils import jst_now, from_utc_iso, fmt_hm
-
         def work_rows():
             return (
                 sb.table("slots")
-                .select("*")
+                .select("id,panel_id,start_at,reserver_user_id,notified")
                 .eq("notified", False)
                 .not_.is_("reserver_user_id", "null")
                 .execute()
@@ -416,7 +412,7 @@ async def set_manager_role_id(self, guild_id: str, role_id: int | None):
         try:
             rows = await self._db(work_rows)
         except Exception as e:
-            print("reminder DB error:", e)
+            print("reminder DB error:", repr(e))
             return
 
         now = jst_now()
@@ -424,57 +420,28 @@ async def set_manager_role_id(self, guild_id: str, role_id: int | None):
         for slot in rows:
             start = from_utc_iso(slot["start_at"])
             diff = (start - now).total_seconds()
-
-            if not (160 <= diff <= 220):
-                continue
-
-            try:
-                notify_ch = bot.get_channel(int(slot["channel_id"]))
-                if not notify_ch:
-                    continue
-
-                uid = str(slot["reserver_user_id"])
-                await notify_ch.send(f"⏰ 3分前：{fmt_hm(start)} の枠です <@{uid}>")
-
-                def mark_notified():
-                    sb.table("slots").update({"notified": True}).eq("id", slot["id"]).execute()
-
-                await self._db(mark_notified)
-
-            except Exception as e:
-                print("reminder send error:", e)
-
-        now = jst_now()
-
-        for slot in rows:
-            # 途中で落ちた/再起動中なら終了
-            try:
-                if bot.is_closed() or (hasattr(bot, "is_ready") and not bot.is_ready()):
-                    return
-            except Exception:
-                return
-
-            start = from_utc_iso(slot["start_at"])
-            diff = (start - now).total_seconds()
-
-            # 3分前（誤差吸収）
             if not (160 <= diff <= 220):
                 continue
 
             def work_panel():
-                return sb.table("panels").select("*").eq("id", slot["panel_id"]).execute().data or []
+                return (
+                    sb.table("panels")
+                    .select("notify_channel_id,notify_enabled,notify_paused")
+                    .eq("id", slot["panel_id"])
+                    .limit(1)
+                    .execute()
+                    .data
+                    or []
+                )
 
             try:
                 panel_rows = await self._db(work_panel)
             except Exception:
                 continue
-
             if not panel_rows:
                 continue
 
             panel = panel_rows[0]
-
-            # 管理者設定
             if not panel.get("notify_enabled", True):
                 continue
             if panel.get("notify_paused", False):
@@ -487,7 +454,8 @@ async def set_manager_role_id(self, guild_id: str, role_id: int | None):
             try:
                 uid = str(slot["reserver_user_id"])
                 await notify_ch.send(f"⏰ 3分前：{fmt_hm(start)} の枠です <@{uid}>")
-            except Exception:
+            except Exception as e:
+                print("reminder send error:", repr(e))
                 continue
 
             def work_set_notified():
