@@ -192,7 +192,7 @@ class MyClient(discord.Client):
         except Exception as e:
             print("on_interaction error:", repr(e))
             print(traceback.format_exc())
-            await safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
+            safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
 
 
 client = MyClient()
