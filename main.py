@@ -106,9 +106,14 @@ class MyClient(discord.Client):
             # 1) スラッシュコマンド等は tree に渡す（公式）
             # -------------------------
             if interaction.type == discord.InteractionType.application_command:
-                await self.tree.process_interaction(interaction)
+                try:
+                    result = self.tree._from_interaction(interaction)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    pass
                 return
-
+                    
             # -------------------------
             # 2) component（ボタン/セレクト）
             # -------------------------
