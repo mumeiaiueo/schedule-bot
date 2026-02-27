@@ -15,7 +15,115 @@ async def _safe_defer(interaction: discord.Interaction, *, ephemeral: bool = Tru
 
 
 async def _safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
+    # bot_interact.py
+import traceback
+import discord
+
+
+def _is_admin(interaction: discord.Interaction) -> bool:
+    m = interaction.user
+    return isinstance(m, discord.Member) and m.guild_permissions.administrator
+
+
+async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
     try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=ephemeral)
+    except Exception:
+        pass
+
+
+async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(content, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(content, ephemeral=ephemeral)
+    except Exception:
+        pass
+
+
+async def handle_component_interaction(client, interaction: discord.Interaction):
+    """
+    ボタン/セレクトだけ処理
+    """
+    try:
+        data = interaction.data or {}
+        custom_id = data.get("custom_id")
+        if not custom_id or not isinstance(custom_id, str):
+            return
+
+        await safe_defer(interaction, ephemeral=True)
+
+        # panel:slot:<panel_id>:<slot_id>
+        if custom_id.startswith("panel:slot:"):
+            parts = custom_id.split(":")
+            if len(parts) != 4:
+                await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
+                return
+
+            panel_id = int(parts[2])
+            slot_id = int(parts[3])
+
+            ok, msg = await client.dm.toggle_reserve(
+                slot_id=slot_id,
+                user_id=str(interaction.user.id),
+                user_name=getattr(interaction.user, "display_name", str(interaction.user)),
+            )
+
+            await client.dm.render_panel(client, panel_id)
+            await safe_send(interaction, msg, ephemeral=True)
+            return
+
+        # panel:breaktoggle:<panel_id>
+        if custom_id.startswith("panel:breaktoggle:"):
+            if not _is_admin(interaction):
+                await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+                return
+
+            parts = custom_id.split(":")
+            if len(parts) != 3:
+                await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
+                return
+
+            panel_id = int(parts[2])
+            view = await client.dm.build_break_select_view(panel_id)
+            await interaction.followup.send(
+                "⌚️ 休憩にする/解除する時間を選んでね👇",
+                view=view,
+                ephemeral=True,
+            )
+            return
+
+        # panel:breakselect:<panel_id>
+        if custom_id.startswith("panel:breakselect:"):
+            if not _is_admin(interaction):
+                await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+                return
+
+            parts = custom_id.split(":")
+            if len(parts) != 3:
+                await safe_send(interaction, "❌ セレクト形式が不正です", ephemeral=True)
+                return
+
+            panel_id = int(parts[2])
+            values = data.get("values") or []
+            if not values:
+                await safe_send(interaction, "❌ 選択値が取得できませんでした", ephemeral=True)
+                return
+
+            slot_id = int(values[0])
+            ok, msg = await client.dm.toggle_break_slot(panel_id, slot_id)
+            await client.dm.render_panel(client, panel_id)
+            await safe_send(interaction, msg, ephemeral=True)
+            return
+
+        await safe_send(interaction, f"unknown custom_id: {custom_id}", ephemeral=True)
+
+    except Exception:
+        print("handle_component_interaction error:")
+        print(traceback.format_exc())
+        await safe_send(interaction, "❌ 内部エラー（ログ確認して）", ephemeral=True)
         if interaction.response.is_done():
             await interaction.followup.send(content, ephemeral=ephemeral)
         else:
