@@ -1,4 +1,4 @@
-# views/panel_view.py  ✅ B方式（main.py が custom_id を処理）用
+# views/panel_view.py ✅ B方式（main.py が custom_id を処理）用
 import discord
 from typing import List, Dict
 
@@ -14,13 +14,12 @@ def build_panel_embed(title: str | None, day_text: str, lines: list[str]):
 
 class PanelView(discord.ui.View):
     """
-    ✅ 重要：callback を一切持たない
-    → 押された時の処理は main.py の on_interaction がやる
+    ✅ callback を一切持たない → 押された時の処理は main.py の on_interaction がやる
 
     custom_id:
-      panel:slot:<panel_id>:<slot_id>
-      panel:breaktoggle:<panel_id>
-      panel:breakselect:<panel_id>   (Select)
+      - panel:slot:<panel_id>:<slot_id>
+      - panel:breaktoggle:<panel_id>
+      - panel:breakselect:<panel_id>（Select）
     """
     def __init__(self, _dm_unused, panel_id: int, buttons: List[Dict]):
         super().__init__(timeout=None)
@@ -49,10 +48,7 @@ class PanelView(discord.ui.View):
 
 
 class BreakSelectView(discord.ui.View):
-    """
-    休憩選択セレクト（最大25）
-    custom_id: panel:breakselect:<panel_id>
-    """
+    """休憩選択セレクト（最大25） custom_id: panel:breakselect:<panel_id>"""
     def __init__(self, _dm_unused, panel_id: int, options: List[discord.SelectOption]):
         super().__init__(timeout=60)
         self.add_item(discord.ui.Select(
