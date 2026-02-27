@@ -1,5 +1,5 @@
-# main.py  ✅ 完全コピペ版（FIX: slash command処理）
-print("🔥 BOOT MARKER v2026-02-24-stable-reminder FULL v3-FIX 🔥")
+# main.py  ✅ 完全コピペ版（B方式：custom_id を main.py で処理）
+print("🔥 BOOT MARKER v2026-02-27 B-mode stable 🔥")
 
 import asyncio
 import os
@@ -41,11 +41,11 @@ def _is_admin(interaction: discord.Interaction) -> bool:
     return isinstance(m, discord.Member) and m.guild_permissions.administrator
 
 
-async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True, thinking: bool = False):
+async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
     """3秒制限回避。既に応答済みなら何もしない。"""
     try:
         if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=ephemeral, thinking=thinking)
+            await interaction.response.defer(ephemeral=ephemeral)
     except Exception:
         pass
 
@@ -82,7 +82,6 @@ class MyClient(discord.Client):
         register_manager_role(self.tree, self.dm)
 
     async def on_ready(self):
-        # sync は起動後1回だけ
         if not self._synced:
             try:
                 await self.tree.sync()
@@ -99,100 +98,101 @@ class MyClient(discord.Client):
 
     async def on_interaction(self, interaction: discord.Interaction):
         """
-        ✅ ボタン/セレクトは custom_id を自前処理
-        ✅ スラッシュコマンド等は discord.py に処理させる（super）
+        ✅ B方式の要：
+        - ボタン/セレクト（component）だけここで処理
+        - スラッシュコマンドは discord.py が内部で処理するので、ここでは触らない
         """
         try:
-            # 1) ボタン / セレクト
-            if interaction.type == discord.InteractionType.component:
-                data = interaction.data or {}
-                custom_id = data.get("custom_id")
-                if not custom_id or not isinstance(custom_id, str):
+            if interaction.type != discord.InteractionType.component:
+                return
+
+            data = interaction.data or {}
+            custom_id = data.get("custom_id")
+            if not custom_id or not isinstance(custom_id, str):
+                return
+
+            await safe_defer(interaction, ephemeral=True)
+
+            # -------------------------
+            # panel:slot:<panel_id>:<slot_id>
+            # -------------------------
+            if custom_id.startswith("panel:slot:"):
+                parts = custom_id.split(":")
+                if len(parts) != 4:
+                    await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
                     return
 
-                # 先に defer（3秒制限回避）
-                await safe_defer(interaction, ephemeral=True)
+                panel_id = int(parts[2])
+                slot_id = int(parts[3])
 
-                # -------------------------
-                # panel:slot:<panel_id>:<slot_id>
-                # -------------------------
-                if custom_id.startswith("panel:slot:"):
-                    parts = custom_id.split(":")
-                    if len(parts) != 4:
-                        await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
-                        return
+                ok, msg = await self.dm.toggle_reserve(
+                    slot_id=slot_id,
+                    user_id=str(interaction.user.id),
+                    user_name=getattr(interaction.user, "display_name", str(interaction.user)),
+                )
 
-                    panel_id = int(parts[2])
-                    slot_id = int(parts[3])
+                await self.dm.render_panel(self, panel_id)
+                await safe_send(interaction, msg, ephemeral=True)
+                return
 
-                    ok, msg = await self.dm.toggle_reserve(
-                        slot_id,
-                        str(interaction.user.id),
-                        interaction.user.display_name,
+            # -------------------------
+            # panel:breaktoggle:<panel_id>
+            # -------------------------
+            if custom_id.startswith("panel:breaktoggle:"):
+                # 管理者 or 管理ロール（DataManagerにあるならそっちで判定も可能）
+                # ここはまず管理者に限定（必要なら role 判定へ拡張）
+                if not _is_admin(interaction):
+                    await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+                    return
+
+                parts = custom_id.split(":")
+                if len(parts) != 3:
+                    await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
+                    return
+
+                panel_id = int(parts[2])
+                view = await self.dm.build_break_select_view(panel_id)
+
+                # view 付きで返す（1発でOK）
+                try:
+                    await interaction.followup.send(
+                        "⌚️ 休憩にする/解除する時間を選んでね👇",
+                        view=view,
+                        ephemeral=True,
                     )
+                except Exception:
+                    await safe_send(interaction, "❌ 表示に失敗しました（もう一度押して）", ephemeral=True)
+                return
 
-                    await self.dm.render_panel(self, panel_id)
-                    await safe_send(interaction, msg, ephemeral=True)
+            # -------------------------
+            # panel:breakselect:<panel_id>（Select）
+            # -------------------------
+            if custom_id.startswith("panel:breakselect:"):
+                if not _is_admin(interaction):
+                    await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
                     return
 
-                # -------------------------
-                # panel:breaktoggle:<panel_id>
-                # -------------------------
-                if custom_id.startswith("panel:breaktoggle:"):
-                    if not _is_admin(interaction):
-                        await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
-                        return
-
-                    parts = custom_id.split(":")
-                    if len(parts) != 3:
-                        await safe_send(interaction, "❌ ボタン形式が不正です", ephemeral=True)
-                        return
-
-                    panel_id = int(parts[2])
-
-                    view = await self.dm.build_break_select_view(panel_id)
-
-                    await safe_send(interaction, "⌚️ 休憩にする/解除する時間を選んでね👇", ephemeral=True)
-                    try:
-                        await interaction.followup.send(view=view, ephemeral=True)
-                    except Exception:
-                        pass
+                parts = custom_id.split(":")
+                if len(parts) != 3:
+                    await safe_send(interaction, "❌ セレクト形式が不正です", ephemeral=True)
                     return
 
-                # -------------------------
-                # panel:breakselect:<panel_id>（Select）
-                # -------------------------
-                if custom_id.startswith("panel:breakselect:"):
-                    if not _is_admin(interaction):
-                        await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
-                        return
-
-                    parts = custom_id.split(":")
-                    if len(parts) != 3:
-                        await safe_send(interaction, "❌ セレクト形式が不正です", ephemeral=True)
-                        return
-
-                    panel_id = int(parts[2])
-
-                    values = data.get("values") or []
-                    if not values:
-                        await safe_send(interaction, "❌ 選択値が取得できませんでした", ephemeral=True)
-                        return
-
-                    slot_id = int(values[0])
-
-                    ok, msg = await self.dm.toggle_break_slot(panel_id, slot_id)
-                    await self.dm.render_panel(self, panel_id)
-                    await safe_send(interaction, msg, ephemeral=True)
+                panel_id = int(parts[2])
+                values = data.get("values") or []
+                if not values:
+                    await safe_send(interaction, "❌ 選択値が取得できませんでした", ephemeral=True)
                     return
 
-                # 想定外 custom_id
+                slot_id = int(values[0])
+                ok, msg = await self.dm.toggle_break_slot(panel_id, slot_id)
+                await self.dm.render_panel(self, panel_id)
+                await safe_send(interaction, msg, ephemeral=True)
                 return
 
         except Exception as e:
             print("on_interaction error:", repr(e))
             print(traceback.format_exc())
-            safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
+            await safe_send(interaction, f"❌ エラー: {repr(e)}", ephemeral=True)
 
 
 client = MyClient()
@@ -205,37 +205,24 @@ async def reminder_loop(bot: MyClient):
 
     loop = asyncio.get_running_loop()
 
-    # バックオフ中なら何もしない
     if bot._reminder_pause_until and loop.time() < bot._reminder_pause_until:
         return
 
     try:
         await bot.dm.send_3min_reminders(bot)
-
         bot._reminder_fail_count = 0
         bot._reminder_pause_until = 0.0
 
-    except RuntimeError as e:
-        # ✅ "Session is closed" 系はよく出るので強制バックオフ
-        msg = repr(e)
-        print("reminder_loop RuntimeError:", msg)
-        if "Session is closed" in msg:
-            bot._reminder_fail_count += 1
-            bot._reminder_pause_until = loop.time() + 120
-            return
-        raise
-
     except Exception as e:
         bot._reminder_fail_count += 1
-
         print("reminder_loop error:", repr(e))
         print(traceback.format_exc())
 
-        # 最大10分バックオフ
         backoff = min(600, 60 * (2 ** (bot._reminder_fail_count - 1)))
-
         msg = repr(e)
-        if "Name or service not known" in msg or "ConnectError" in msg or "Temporary failure in name resolution" in msg:
+        if "Session is closed" in msg:
+            backoff = max(backoff, 120)
+        if "Name or service not known" in msg or "Temporary failure in name resolution" in msg:
             backoff = max(backoff, 120)
 
         bot._reminder_pause_until = loop.time() + backoff
@@ -263,6 +250,14 @@ async def main():
     if not TOKEN or not TOKEN.strip():
         raise RuntimeError("DISCORD_TOKEN が未設定です")
 
-    await client.start(TOKEN)
+    while True:
+        try:
+            async with client:
+                await client.start(TOKEN)
+        except Exception as e:
+            print("fatal error:", repr(e))
+            print(traceback.format_exc())
+            await asyncio.sleep(30)
+
 
 asyncio.run(main())
