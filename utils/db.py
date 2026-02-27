@@ -1,4 +1,6 @@
 # utils/db.py
+print("✅ LOADED db.py v2026-02-27 safe-no-proxy")
+
 import os
 import socket
 from urllib.parse import urlparse
@@ -24,12 +26,23 @@ def _host_from_url(url: str | None) -> str | None:
         return None
 
 
+def _normalize_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    u = str(url).strip()
+    # 末尾スラッシュは事故の元なので除去
+    while u.endswith("/"):
+        u = u[:-1]
+    return u or None
+
+
 # ---- URL（互換で複数キー候補）----
 SUPABASE_URL, _URL_KEYNAME = _pick_first_env(
     "SUPABASE_URL",
     "SUPABASE_PROJECT_URL",
     "DATABASE_SUPABASE_URL",
 )
+SUPABASE_URL = _normalize_url(SUPABASE_URL)
 
 # ---- KEY（おすすめは SUPABASE_KEY に統一）----
 SUPABASE_KEY, _KEY_KEYNAME = _pick_first_env(
@@ -44,11 +57,16 @@ print(f"SUPABASE_KEY key = {_KEY_KEYNAME}")
 print(f"SUPABASE_URL set? = {bool(SUPABASE_URL)}")
 print(f"SUPABASE_KEY set? = {bool(SUPABASE_KEY)}")
 
+sb = None
+
 # ---- バリデーション（ここでは “落とさない” 方針）----
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("⚠️ Supabase env is missing. DB features will be disabled.")
-    sb = None
 else:
+    # URLがそれっぽいか軽くチェック（typo検出）
+    if not (SUPABASE_URL.startswith("https://") and "supabase.co" in SUPABASE_URL):
+        print(f"⚠️ SUPABASE_URL looks unusual: {SUPABASE_URL}")
+
     # ---- DNSチェック（落とさない）----
     _host = _host_from_url(SUPABASE_URL)
     if _host:
@@ -60,10 +78,14 @@ else:
     else:
         print("⚠️ Could not parse host from SUPABASE_URL")
 
-    # ---- client 作成（ここも落とさない）----
+    # ---- client 作成（proxy/options は絶対使わない）----
     try:
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)
         print("✅ Supabase client created")
+    except TypeError as e:
+        # ここに来るなら依存関係が壊れてる可能性が高い
+        print("⚠️ Supabase client create failed (TypeError):", repr(e))
+        sb = None
     except Exception as e:
         print("⚠️ Supabase client create failed:", repr(e))
         sb = None
