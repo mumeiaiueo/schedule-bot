@@ -74,12 +74,12 @@ class MyClient(discord.Client):
         self.setup_state: dict[int, dict] = {}
 
         async def setup_hook(self):
-        register_setup(self.tree, self.dm)
-        register_reset(self.tree, self.dm)
-        register_remind(self.tree, self.dm)
-        register_notify(self.tree, self.dm)
-        register_notify_panel(self.tree, self.dm)
-        register_manager_role(self.tree, self.dm)
+            register_setup(self.tree, self.dm)
+            register_reset(self.tree, self.dm)
+            register_remind(self.tree, self.dm)
+            register_notify(self.tree, self.dm)
+            register_notify_panel(self.tree, self.dm)
+            register_manager_role(self.tree, self.dm)
 
         # ✅ 追加：スラッシュコマンドの例外を必ずログ＆返信する（超重要）
         @self.tree.error
