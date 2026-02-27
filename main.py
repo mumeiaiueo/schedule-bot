@@ -1,4 +1,3 @@
-# main.py  ✅ 完全コピペ版（B方式：custom_id を main.py で処理）
 print("🔥 BOOT MARKER v2026-02-27 B-mode stable FINAL 🔥")
 
 import asyncio
@@ -42,7 +41,6 @@ def _is_admin(interaction: discord.Interaction) -> bool:
 
 
 async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
-    """3秒制限回避。既に応答済みなら何もしない。"""
     try:
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=ephemeral)
@@ -51,13 +49,26 @@ async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True
 
 
 async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
-    """二重返信でも落ちない送信。"""
     try:
         if interaction.response.is_done():
             await interaction.followup.send(content, ephemeral=ephemeral)
         else:
             await interaction.response.send_message(content, ephemeral=ephemeral)
     except Exception:
+        pass
+
+
+async def _dispatch_tree(tree: discord.app_commands.CommandTree, interaction: discord.Interaction):
+    """
+    discord.py の版差対策：
+    tree._from_interaction が coroutine の版と、None返す版がある。
+    """
+    try:
+        res = tree._from_interaction(interaction)
+        if asyncio.iscoroutine(res):
+            await res
+    except Exception:
+        # ここで落として bot を止めない
         pass
 
 
@@ -68,12 +79,10 @@ class MyClient(discord.Client):
         self.dm = DataManager()
         self._synced = False
 
-        # reminder のバックオフ制御
         self._reminder_fail_count = 0
         self._reminder_pause_until = 0.0  # loop.time()
 
     async def setup_hook(self):
-        # スラッシュコマンド登録
         register_setup(self.tree, self.dm)
         register_reset(self.tree, self.dm)
         register_remind(self.tree, self.dm)
@@ -97,32 +106,18 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
-        """
-        ✅ B方式の要：
-        - component(ボタン/セレクト)だけ自前処理
-        - それ以外（スラッシュ等）は CommandTree に渡す（awaitしない）
-        """
         try:
-            # -------------------------
-            # 1) component 以外は tree に渡す
-            # -------------------------
+            # ✅ スラッシュ等は tree に渡す（B方式でも必須）
             if interaction.type != discord.InteractionType.component:
-                try:
-                    # discord.py の版差で await できない/None を返す事があるので await しない
-                    self.tree._from_interaction(interaction)
-                except Exception:
-                    pass
+                await _dispatch_tree(self.tree, interaction)
                 return
 
-            # -------------------------
-            # 2) ここから component 処理
-            # -------------------------
+            # ✅ ここから component（ボタン/セレクト）だけ自前処理
             data = interaction.data or {}
             custom_id = data.get("custom_id")
             if not custom_id or not isinstance(custom_id, str):
                 return
 
-            # 先に defer（3秒制限回避）
             await safe_defer(interaction, ephemeral=True)
 
             # panel:slot:<panel_id>:<slot_id>
@@ -159,7 +154,7 @@ class MyClient(discord.Client):
                 panel_id = int(parts[2])
                 view = await self.dm.build_break_select_view(panel_id)
 
-                # defer 済みなので followup で送る
+                # defer 済みなので followup
                 try:
                     await interaction.followup.send(
                         "⌚️ 休憩にする/解除する時間を選んでね👇",
@@ -170,7 +165,7 @@ class MyClient(discord.Client):
                     await safe_send(interaction, "❌ 表示に失敗しました（もう一度押して）", ephemeral=True)
                 return
 
-            # panel:breakselect:<panel_id>（Select）
+            # panel:breakselect:<panel_id>
             if custom_id.startswith("panel:breakselect:"):
                 if not _is_admin(interaction):
                     await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
@@ -192,9 +187,6 @@ class MyClient(discord.Client):
                 await self.dm.render_panel(self, panel_id)
                 await safe_send(interaction, msg, ephemeral=True)
                 return
-
-            # 想定外 custom_id は無視
-            return
 
         except Exception as e:
             print("on_interaction error:", repr(e))
@@ -267,7 +259,6 @@ async def main():
                 reminder_loop.stop()
         except Exception:
             pass
-
         try:
             await client.close()
         except Exception:
