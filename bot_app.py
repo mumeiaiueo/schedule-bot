@@ -26,6 +26,7 @@ class MyClient(discord.Client):
         self.tree = discord.app_commands.CommandTree(self)
         self.dm = DataManager()
         self._synced = False
+        self.setup_state = {}   # ← ★ここ追加
 
     async def setup_hook(self):
         # slash commands 登録
