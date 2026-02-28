@@ -55,7 +55,7 @@ class MyClient(discord.Client):
 
     async def on_interaction(self, interaction: discord.Interaction):
     # ✅ これがないとスラッシュコマンドが処理されない
-    await super().on_interaction(interaction)
+        await super().on_interaction(interaction)
 
     # （必要なら）追加の独自処理だけ後ろでやる
     try:
