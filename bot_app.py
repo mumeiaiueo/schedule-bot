@@ -55,8 +55,14 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
-        await super().on_interaction(interaction)
+
+    # component（ボタン・セレクト）は自前で処理
+    if interaction.type == discord.InteractionType.component:
         await handle_interaction(self, interaction)
+        return
+
+    # それ以外（スラッシュコマンドなど）はdiscord.pyに任せる
+    await super().on_interaction(interaction)
         """
         - Component(Button/Select) → handle_interaction に渡す
         - Slash command 等は discord.py 標準処理に任せるため最後に super() を呼ぶ
