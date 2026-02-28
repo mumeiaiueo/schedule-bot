@@ -151,44 +151,30 @@ class DataManager:
         # -----------------------------
     # reset 用：指定日の募集を削除
     # -----------------------------
-    async def delete_panel_by_channel_day(self, guild_id: str, channel_id: str, day_date) -> bool:
+        async def delete_panel_by_channel_day(self, guild_id: str, channel_id: str, day_date) -> bool:
         """
-        指定した (guild_id, channel_id, day) の募集(panels)とslotsを削除する
-        day_date は date / datetime / "YYYY-MM-DD" どれでもOK
-        戻り値: 何か削除したら True
+        /reset_channel 用
+        指定 guild/channel/day の panel を消す（slots も一緒に消す）
         """
         self._require_db()
-
-        # day の文字列化（DBの panels.day に合わせる）
-        try:
-            if hasattr(day_date, "date"):  # datetime
-                day_str = str(day_date.date())
-            else:
-                day_str = str(day_date)  # date or str
-        except Exception:
-            day_str = str(day_date)
+        day_str = str(day_date)
 
         def work():
-            # まず対象 panel を探す
             panels = (
                 sb.table("panels")
                 .select("id")
-                .eq("guild_id", str(guild_id))
-                .eq("channel_id", str(channel_id))
+                .eq("guild_id", guild_id)
+                .eq("channel_id", channel_id)
                 .eq("day", day_str)
                 .execute()
                 .data
                 or []
             )
             panel_ids = [p["id"] for p in panels]
-
             if panel_ids:
-                # slots を先に消す（外部キーあっても安全）
                 sb.table("slots").delete().in_("panel_id", panel_ids).execute()
-                # panels を消す
                 sb.table("panels").delete().in_("id", panel_ids).execute()
                 return True
-
             return False
 
         return await self._db(work)
