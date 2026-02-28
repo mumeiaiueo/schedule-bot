@@ -55,26 +55,26 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
-
-    # component（ボタン・セレクト）は自前で処理
-    if interaction.type == discord.InteractionType.component:
-        await handle_interaction(self, interaction)
-        return
-
-    # それ以外（スラッシュコマンドなど）はdiscord.pyに任せる
-    await super().on_interaction(interaction)
         """
         - Component(Button/Select) → handle_interaction に渡す
-        - Slash command 等は discord.py 標準処理に任せるため最後に super() を呼ぶ
+        - Slash command 等 → discord.py 標準処理(super)へ
         """
-        try:
-            if interaction.type == discord.InteractionType.component:
-                await handle_interaction(self, interaction)
-        except Exception:
-            print("on_interaction error")
-            print(traceback.format_exc())
+        if interaction.type == discord.InteractionType.component:
+            try:
+                # 3秒以内ACK（「アプリが応答しませんでした」対策）
+                if not interaction.response.is_done():
+                    await interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
 
-        # これがインデント崩れると bot が即死する（今回の原因）
+            try:
+                await handle_interaction(self, interaction)
+            except Exception:
+                print("on_interaction(component) error")
+                print(traceback.format_exc())
+            return
+
+        # スラッシュコマンド等は標準に任せる
         await super().on_interaction(interaction)
 
 
