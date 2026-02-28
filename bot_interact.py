@@ -1,9 +1,7 @@
-# bot_interact.py
 import traceback
 from datetime import datetime, timedelta, timezone
 
 import discord
-
 from views.setup_wizard import build_setup_embed, build_setup_view
 
 
@@ -41,12 +39,8 @@ def _get_state(client: discord.Client, user_id: int) -> dict:
     if st is None:
         st = {
             "day": None,
-            "start_hour": None,
-            "start_min": None,
-            "end_hour": None,
-            "end_min": None,
-            "start": None,
-            "end": None,
+            "start": None,  # "HH:MM"
+            "end": None,    # "HH:MM"
             "interval": None,
             "notify_channel_id": None,
             "everyone": False,
@@ -58,7 +52,6 @@ def _get_state(client: discord.Client, user_id: int) -> dict:
 
 async def handle_interaction(client, interaction: discord.Interaction):
     try:
-        # component以外（スラッシュ等）は discord.py に任せる
         if interaction.type != discord.InteractionType.component:
             return
 
@@ -100,30 +93,19 @@ async def handle_interaction(client, interaction: discord.Interaction):
             elif custom_id == "setup:day:tomorrow":
                 st["day"] = "tomorrow"
 
-            elif custom_id == "setup:start_hour" and values:
-                st["start_hour"] = values[0]
-            elif custom_id == "setup:start_min" and values:
-                st["start_min"] = values[0]
-            elif custom_id == "setup:end_hour" and values:
-                st["end_hour"] = values[0]
-            elif custom_id == "setup:end_min" and values:
-                st["end_min"] = values[0]
+            elif custom_id == "setup:start_time" and values:
+                st["start"] = values[0]
+            elif custom_id == "setup:end_time" and values:
+                st["end"] = values[0]
 
             elif custom_id == "setup:interval" and values:
                 st["interval"] = int(values[0])
 
             elif custom_id == "setup:notify_channel" and values:
-                # ChannelSelect は values に channel_id が入る
                 st["notify_channel_id"] = str(values[0])
 
             elif custom_id == "setup:everyone:toggle":
                 st["everyone"] = not st["everyone"]
-
-            # start/end 文字列確定
-            if st.get("start_hour") and st.get("start_min"):
-                st["start"] = f"{st['start_hour']}:{st['start_min']}"
-            if st.get("end_hour") and st.get("end_min"):
-                st["end"] = f"{st['end_hour']}:{st['end_min']}"
 
             # 作成ボタン
             if custom_id == "setup:create":
@@ -169,7 +151,7 @@ async def handle_interaction(client, interaction: discord.Interaction):
                     return
 
                 await client.dm.render_panel(client, int(res["panel_id"]))
-                # 状態破棄
+
                 try:
                     client.setup_state.pop(interaction.user.id, None)
                 except Exception:
@@ -179,10 +161,8 @@ async def handle_interaction(client, interaction: discord.Interaction):
                 return
 
             await _refresh_setup(interaction, st)
-            await safe_send(interaction, "✅ 更新")
             return
 
-        # その他
         await safe_send(interaction, f"unknown custom_id: {custom_id}")
 
     except Exception as e:
