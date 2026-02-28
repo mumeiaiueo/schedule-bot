@@ -1,12 +1,15 @@
 # bot_interact.py
 from __future__ import annotations
 
+import asyncio
+import re
 import traceback
 from datetime import datetime, timedelta
 
 import discord
 
 from utils.time_utils import jst_now
+from utils.db import sb
 from views.setup_wizard import build_setup_embed, build_setup_view
 
 
@@ -39,7 +42,6 @@ def _ensure_setup_state(client: discord.Client, user_id: int) -> dict:
         st = _default_setup_state()
         client.setup_state[user_id] = st
 
-    # 重要キーが欠けてても復元（「古いウィザード」連打を止める）
     base = _default_setup_state()
     for k, v in base.items():
         st.setdefault(k, v)
@@ -78,7 +80,6 @@ def _build_day_date(day_key: str):
 
 
 async def _safe_ephemeral(interaction: discord.Interaction, text: str):
-    # component は bot_app.py 側で defer() 済みの可能性が高いので followup を優先
     try:
         if interaction.response.is_done():
             await interaction.followup.send(text, ephemeral=True)
@@ -89,19 +90,70 @@ async def _safe_ephemeral(interaction: discord.Interaction, text: str):
 
 
 async def _safe_edit_message(interaction: discord.Interaction, *, embed=None, view=None, content=None):
-    # ephemeral message でも interaction.message.edit が基本いける
     try:
         if interaction.message:
             await interaction.message.edit(content=content, embed=embed, view=view)
             return
     except Exception:
         pass
-
-    # fallback
     try:
         await interaction.edit_original_response(content=content, embed=embed, view=view)
     except Exception:
         pass
+
+
+# -----------------------------
+# DB helpers for panel buttons
+# -----------------------------
+async def _db(fn):
+    return await asyncio.to_thread(fn)
+
+
+async def _get_panel_id_by_slot_id(slot_id: int) -> int | None:
+    # slots.id -> panel_id を引く
+    def work():
+        rows = (
+            sb.table("slots")
+            .select("panel_id")
+            .eq("id", slot_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            return None
+        return int(rows[0]["panel_id"])
+
+    try:
+        return await _db(work)
+    except Exception:
+        return None
+
+
+def _extract_slot_id(custom_id: str) -> int | None:
+    """
+    いろんな形式に対応:
+    - "slot:123"
+    - "reserve:123"
+    - "panel:slot:123"
+    - "123"（数字だけ）
+    - "slot_123" / "slot-123"
+    """
+    if not custom_id:
+        return None
+
+    # 数字だけ
+    if custom_id.isdigit():
+        return int(custom_id)
+
+    m = re.search(r"(\d{1,12})", custom_id)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
 
 
 # -----------------------------
@@ -113,11 +165,8 @@ async def handle_setup_wizard(bot: discord.Client, interaction: discord.Interact
 
     data = interaction.data or {}
     custom_id = data.get("custom_id")
-
-    # セレクトは values に入る
     values = data.get("values") or []
 
-    # ---- buttons: setup:day:today / tomorrow
     if custom_id == "setup:day:today":
         st["day"] = "today"
     elif custom_id == "setup:day:tomorrow":
@@ -125,9 +174,7 @@ async def handle_setup_wizard(bot: discord.Client, interaction: discord.Interact
     elif custom_id == "setup:everyone:toggle":
         st["everyone"] = not bool(st.get("everyone"))
 
-    # ---- step control
     elif custom_id == "setup:step:next":
-        # step1 validation
         _recalc_hm(st)
         if st.get("day") not in ("today", "tomorrow"):
             await _safe_ephemeral(interaction, "❌ 日付（今日/明日）を選んでください")
@@ -139,7 +186,6 @@ async def handle_setup_wizard(bot: discord.Client, interaction: discord.Interact
             if not sh or not eh:
                 await _safe_ephemeral(interaction, "❌ 時刻の形式が不正です。もう一度選び直してね")
             else:
-                # start < end をチェック（同日内想定）
                 if (eh[0], eh[1]) <= (sh[0], sh[1]):
                     await _safe_ephemeral(interaction, "❌ 終了は開始より後にしてください（同じ/前は不可）")
                 else:
@@ -148,7 +194,6 @@ async def handle_setup_wizard(bot: discord.Client, interaction: discord.Interact
     elif custom_id == "setup:step:back":
         st["step"] = 1
 
-    # ---- create
     elif custom_id == "setup:create":
         _recalc_hm(st)
 
@@ -162,10 +207,8 @@ async def handle_setup_wizard(bot: discord.Client, interaction: discord.Interact
             await _safe_ephemeral(interaction, "❌ 間隔（分）を選んでください")
             st["step"] = 2
         else:
-            # notify_channel 未設定なら「このチャンネル」を使う（未設定で止まらないように）
             notify_channel_id = st.get("notify_channel_id") or str(interaction.channel_id)
 
-            # JSTで start/end datetime を作る
             day_date = _build_day_date(st["day"])
             sh = _parse_hm(st["start"])
             eh = _parse_hm(st["end"])
@@ -176,7 +219,6 @@ async def handle_setup_wizard(bot: discord.Client, interaction: discord.Interact
                 start_at = datetime(day_date.year, day_date.month, day_date.day, sh[0], sh[1], tzinfo=jst_now().tzinfo)
                 end_at = datetime(day_date.year, day_date.month, day_date.day, eh[0], eh[1], tzinfo=jst_now().tzinfo)
 
-                # create_panel → render_panel
                 try:
                     res = await dm.create_panel(
                         guild_id=str(interaction.guild_id),
@@ -196,26 +238,22 @@ async def handle_setup_wizard(bot: discord.Client, interaction: discord.Interact
                         panel_id = int(res["panel_id"])
                         await dm.render_panel(bot, panel_id)
 
-                        # ウィザードを完了表示（view外す）
                         embed = discord.Embed(title="✅ 作成しました", description="パネルを投稿しました。", color=0x57F287)
                         await _safe_edit_message(interaction, embed=embed, view=None)
                         await _safe_ephemeral(interaction, "✅ 完了！パネルを確認してね")
 
-                        # 状態クリア（連続作成したいなら消してOK）
                         try:
                             bot.setup_state.pop(interaction.user.id, None)
                         except Exception:
                             pass
-
-                        return  # 完了なのでここで終了
+                        return
 
                 except Exception:
                     await _safe_ephemeral(interaction, "❌ 作成中にエラー（ログ確認）")
                     print("setup:create error")
                     print(traceback.format_exc())
 
-    # ---- selects
-    # hour/min selects
+    # selects
     elif custom_id == "setup:start_hour" and values:
         st["start_hour"] = values[0]
     elif custom_id == "setup:start_min" and values:
@@ -224,19 +262,14 @@ async def handle_setup_wizard(bot: discord.Client, interaction: discord.Interact
         st["end_hour"] = values[0]
     elif custom_id == "setup:end_min" and values:
         st["end_min"] = values[0]
-
-    # interval select
     elif custom_id == "setup:interval" and values:
         try:
             st["interval"] = int(values[0])
         except Exception:
             st["interval"] = None
-
-    # notify channel select
     elif custom_id == "setup:notify_channel" and values:
         st["notify_channel_id"] = str(values[0])
 
-    # ここまで来たら embed/view を更新
     _recalc_hm(st)
     embed = build_setup_embed(st)
     view = build_setup_view(st)
@@ -244,13 +277,47 @@ async def handle_setup_wizard(bot: discord.Client, interaction: discord.Interact
 
 
 # -----------------------------
-# Generic component handler (buttons on panel etc.)
+# Panel reserve handler
+# -----------------------------
+async def handle_panel_reserve(bot: discord.Client, interaction: discord.Interaction, dm, custom_id: str):
+    """
+    PanelViewのボタンを押したときに予約/キャンセルする
+    """
+    if sb is None:
+        await _safe_ephemeral(interaction, "❌ DB未接続（SUPABASE設定を確認）")
+        return
+
+    slot_id = _extract_slot_id(custom_id)
+    if not slot_id:
+        # 何もしない（別のViewのボタンかも）
+        return
+
+    # 予約トグル
+    ok, msg = await dm.toggle_reserve(
+        slot_id=slot_id,
+        user_id=str(interaction.user.id),
+        user_name=getattr(interaction.user, "display_name", None) or interaction.user.name,
+    )
+
+    await _safe_ephemeral(interaction, ("✅ " if ok else "❌ ") + msg)
+
+    # パネル更新（slot_id→panel_id引いて再描画）
+    panel_id = await _get_panel_id_by_slot_id(slot_id)
+    if not panel_id:
+        return
+    try:
+        await dm.render_panel(bot, panel_id)
+    except Exception:
+        print("render_panel error")
+        print(traceback.format_exc())
+
+
+# -----------------------------
+# Entry point
 # -----------------------------
 async def handle_interaction(bot: discord.Client, interaction: discord.Interaction):
     """
-    bot_app.py から呼ばれる入口。
-    - setup wizard: custom_id startswith "setup:"
-    - それ以外は必要に応じて増やせる
+    bot_app.py の on_interaction(component) から呼ばれる入口
     """
     try:
         data = interaction.data or {}
@@ -259,18 +326,18 @@ async def handle_interaction(bot: discord.Client, interaction: discord.Interacti
             return
 
         dm = getattr(bot, "dm", None)
+        if dm is None:
+            await _safe_ephemeral(interaction, "❌ DataManager未初期化")
+            return
 
         # ✅ setup wizard
         if custom_id.startswith("setup:") or custom_id.startswith("setup"):
-            if dm is None:
-                await _safe_ephemeral(interaction, "❌ DataManager未初期化")
-                return
             await handle_setup_wizard(bot, interaction, dm)
             return
 
-        # ここから先は「あなたのPanelViewのcustom_id仕様」に合わせて増やせる
-        # 例： slot:123 みたいな仕様なら予約トグルを実装できる
-        # （今はウィザード修正が目的なので、未定義は黙って無視）
+        # ✅ 募集パネル（予約ボタン）: custom_idに数字が含まれていればslot_idとして扱う
+        # （あなたのPanelViewのcustom_id形式が不明でも、ほぼ救えるようにしてある）
+        await handle_panel_reserve(bot, interaction, dm, custom_id)
         return
 
     except Exception:
