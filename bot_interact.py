@@ -19,8 +19,24 @@ async def safe_send(interaction: discord.Interaction, msg: str):
 async def _refresh_setup(interaction: discord.Interaction, st: dict):
     embed = build_setup_embed(st)
     view = build_setup_view(st)
-    await interaction.message.edit(embed=embed, view=view)
 
+    try:
+        # まだ応答してないなら「このメッセージを更新」で返すのが最強
+        if not interaction.response.is_done():
+            await interaction.response.edit_message(embed=embed, view=view)
+            return
+
+        # 既にdefer済みなら message.edit を試す
+        if interaction.message:
+            await interaction.message.edit(embed=embed, view=view)
+            return
+
+    except discord.NotFound:
+        # 404 Unknown Message 対策：メッセージが消えてたら諦めて新規に出す
+        try:
+            await interaction.followup.send("⚠️ 古いウィザードだったので作り直しました。/setup_channel をもう一度実行してね", ephemeral=True)
+        except Exception:
+            pass
 
 def _get_state(client, user_id):
     if not hasattr(client, "setup_state"):
