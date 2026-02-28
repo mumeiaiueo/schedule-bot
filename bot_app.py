@@ -55,8 +55,8 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
-    await super().on_interaction(interaction)
-    await handle_interaction(self, interaction)
+        await super().on_interaction(interaction)
+        await handle_interaction(self, interaction)
         """
         - Component(Button/Select) → handle_interaction に渡す
         - Slash command 等は discord.py 標準処理に任せるため最後に super() を呼ぶ
