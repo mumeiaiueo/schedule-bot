@@ -2,7 +2,6 @@
 import os
 import asyncio
 import traceback
-
 import discord
 from discord.ext import tasks
 from dotenv import load_dotenv
@@ -22,14 +21,6 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
-
-
-async def _safe_defer(interaction: discord.Interaction):
-    try:
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
-    except Exception:
-        pass
 
 
 class MyClient(discord.Client):
@@ -63,12 +54,20 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
-        try:
-            if interaction.type == discord.InteractionType.component:
-                await _safe_defer(interaction)
+        # ✅ component（ボタン/セレクト）だけ自前処理
+        if interaction.type == discord.InteractionType.component:
+            try:
                 await handle_interaction(self, interaction)
+            except Exception:
+                print("handle_interaction error")
+                print(traceback.format_exc())
+            return
+
+        # ✅ スラッシュコマンドなどは CommandTree に処理させる
+        try:
+            await self.tree.process_interaction(interaction)
         except Exception:
-            print("on_interaction error")
+            print("process_interaction error")
             print(traceback.format_exc())
 
 
@@ -84,25 +83,8 @@ async def reminder_loop(bot: MyClient):
 
 
 async def run_bot(token: str):
-    backoff = 10
-    while True:
-        client = MyClient()
-        try:
-            await client.start(token)
-            return
-        except discord.errors.HTTPException as e:
-            if getattr(e, "status", None) == 429:
-                print(f"⚠️ 429 Too Many Requests. sleep {backoff}s")
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 300)
-                continue
-            print("HTTPException:", repr(e))
-        except Exception as e:
-            print("start failed:", repr(e))
-
-        print(f"retry after {backoff}s")
-        await asyncio.sleep(backoff)
-        backoff = min(backoff * 2, 300)
+    client = MyClient()
+    await client.start(token)
 
 
 def main():
