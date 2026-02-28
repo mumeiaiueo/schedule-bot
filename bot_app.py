@@ -1,7 +1,8 @@
-# bot_app.py
+# bot_app.py  （完全コピペ差し替え版）
 import os
 import asyncio
 import traceback
+
 import discord
 from discord.ext import tasks
 from dotenv import load_dotenv
@@ -22,6 +23,15 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
+
+
+async def _safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
+    """component 3秒ACK用（既に応答済みでも落ちない）"""
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=ephemeral)
+    except Exception:
+        pass
 
 
 class MyClient(discord.Client):
@@ -59,23 +69,25 @@ class MyClient(discord.Client):
         - Component(Button/Select) → handle_interaction に渡す
         - Slash command 等 → discord.py 標準処理(super)へ
         """
-        if interaction.type == discord.InteractionType.component:
-            try:
-                # 3秒以内ACK（「アプリが応答しませんでした」対策）
-                if not interaction.response.is_done():
-                    await interaction.response.defer(ephemeral=True)
-            except Exception:
-                pass
+        try:
+            if interaction.type == discord.InteractionType.component:
+                # ✅ 3秒以内ACK（応答なし対策）
+                await _safe_defer(interaction, ephemeral=True)
 
-            try:
-                await handle_interaction(self, interaction)
-            except Exception:
-                print("on_interaction(component) error")
-                print(traceback.format_exc())
-            return
+                try:
+                    await handle_interaction(self, interaction)
+                except Exception:
+                    print("on_interaction(component) error")
+                    print(traceback.format_exc())
+                return
 
-        # スラッシュコマンド等は標準に任せる
-        await super().on_interaction(interaction)
+            # ✅ スラッシュ等は標準に任せる
+            await super().on_interaction(interaction)
+
+        except Exception:
+            # ここで落として bot を殺さない
+            print("on_interaction error")
+            print(traceback.format_exc())
 
 
 @tasks.loop(seconds=60, reconnect=True)
@@ -90,12 +102,47 @@ async def reminder_loop(bot: MyClient):
 
 
 async def run_bot(token: str):
-    client = MyClient()
-    await client.start(token)
+    """
+    ✅ 429 / 一時的ネットワーク / Session is closed 対策：
+    - 失敗したら待って再試行（指数バックオフ）
+    - これが無いと Render の再起動と合わさって Discord にログイン連打→429になりやすい
+    """
+    backoff = 10  # 秒
+    while True:
+        client = MyClient()
+        try:
+            await client.start(token)
+            return
+        except discord.errors.HTTPException as e:
+            status = getattr(e, "status", None)
+            if status == 429:
+                print(f"⚠️ 429 Too Many Requests. sleep {backoff}s then retry")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 300)  # 最大5分
+                continue
+            print("❌ HTTPException:", repr(e))
+            print(traceback.format_exc())
+        except RuntimeError as e:
+            # aiohttp の "Session is closed" がここで来ることがある
+            if "Session is closed" in str(e):
+                print(f"⚠️ Session is closed. sleep {backoff}s then retry")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 300)
+                continue
+            print("❌ RuntimeError:", repr(e))
+            print(traceback.format_exc())
+        except Exception as e:
+            print("❌ start failed:", repr(e))
+            print(traceback.format_exc())
+
+        # 共通リトライ
+        print(f"⏸ retry after {backoff}s")
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, 300)
 
 
 def main():
-    if not TOKEN:
+    if not TOKEN or not TOKEN.strip():
         raise RuntimeError("DISCORD_TOKEN 未設定")
     asyncio.run(run_bot(TOKEN))
 
