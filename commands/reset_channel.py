@@ -5,22 +5,28 @@ from discord import app_commands
 from utils.time_utils import jst_now
 from utils.discord_utils import safe_send, safe_defer
 
-def _is_admin(interaction: discord.Interaction) -> bool:
-    if not interaction.guild or not interaction.user:
-        return False
-    member = interaction.user
-    if isinstance(member, discord.Member):
-        return member.guild_permissions.administrator
-    return False
 
 def register(tree: app_commands.CommandTree, dm):
     @tree.command(name="reset_channel", description="このチャンネルの今日の募集パネルを削除（作り直し用）")
     async def reset_channel(interaction: discord.Interaction):
-        if not _is_admin(interaction):
-            await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+        # ✅ 管理者 or 管理ロール（DataManager.is_manager がある前提）
+        try:
+            if hasattr(dm, "is_manager"):
+                if not await dm.is_manager(interaction):
+                    await safe_send(interaction, "❌ 管理者（または管理ロール）のみ実行できます", ephemeral=True)
+                    return
+            else:
+                # fallback: 管理者のみ
+                member = interaction.user
+                if not (isinstance(member, discord.Member) and member.guild_permissions.administrator):
+                    await safe_send(interaction, "❌ 管理者のみ実行できます", ephemeral=True)
+                    return
+        except Exception:
+            await safe_send(interaction, "❌ 権限チェックに失敗しました", ephemeral=True)
             return
 
-        await safe_defer(interaction, ephemeral=True, thinking=True)
+        # ✅ defer（thinking=True は utils 側の実装差で落ちやすいので付けない）
+        await safe_defer(interaction, ephemeral=True)
 
         try:
             day_date = jst_now().date()
