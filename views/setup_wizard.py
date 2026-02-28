@@ -73,11 +73,50 @@ class SetupWizardViewStep1(discord.ui.View):
     def __init__(self, st: dict):
         super().__init__(timeout=600)
 
-        self.add_item(discord.ui.Button(label="今日", style=discord.ButtonStyle.primary, custom_id="setup:day:today", row=0))
-        self.add_item(discord.ui.Button(label="明日", style=discord.ButtonStyle.secondary, custom_id="setup:day:tomorrow", row=0))
-        self.add_item(discord.ui.Button(label="@everyone切替", style=discord.ButtonStyle.secondary, custom_id="setup:everyone:toggle", row=0))
-        self.add_item(discord.ui.Button(label="次へ", style=discord.ButtonStyle.success, custom_id="setup:step:next", row=0))
+        # ---- 日付ボタン（状態で色変更）
+        day = st.get("day")
 
+        today_style = discord.ButtonStyle.primary if day == "today" else discord.ButtonStyle.secondary
+        tomorrow_style = discord.ButtonStyle.primary if day == "tomorrow" else discord.ButtonStyle.secondary
+
+        self.add_item(discord.ui.Button(
+            label="今日",
+            style=today_style,
+            custom_id="setup:day:today",
+            row=0
+        ))
+
+        self.add_item(discord.ui.Button(
+            label="明日",
+            style=tomorrow_style,
+            custom_id="setup:day:tomorrow",
+            row=0
+        ))
+
+        # ---- @everyone 切替（ON=緑 / OFF=グレー）
+        everyone_on = bool(st.get("everyone"))
+
+        everyone_style = (
+            discord.ButtonStyle.success  # 緑
+            if everyone_on
+            else discord.ButtonStyle.secondary  # グレー
+        )
+
+        self.add_item(discord.ui.Button(
+            label="@everyone ON" if everyone_on else "@everyone OFF",
+            style=everyone_style,
+            custom_id="setup:everyone:toggle",
+            row=0
+        ))
+
+        self.add_item(discord.ui.Button(
+            label="次へ",
+            style=discord.ButtonStyle.success,
+            custom_id="setup:step:next",
+            row=0
+        ))
+
+        # ---- 時刻セレクト（選択値表示）
         self.add_item(_HourSelect(
             custom_id="setup:start_hour",
             placeholder=_ph("開始(時)", st.get("start_hour")),
@@ -85,7 +124,7 @@ class SetupWizardViewStep1(discord.ui.View):
         ))
         self.add_item(_MinSelect(
             custom_id="setup:start_min",
-            placeholder=_ph("開始(分) 5分刻み", st.get("start_min")),
+            placeholder=_ph("開始(分)", st.get("start_min")),
             row=2
         ))
         self.add_item(_HourSelect(
@@ -95,7 +134,7 @@ class SetupWizardViewStep1(discord.ui.View):
         ))
         self.add_item(_MinSelect(
             custom_id="setup:end_min",
-            placeholder=_ph("終了(分) 5分刻み", st.get("end_min")),
+            placeholder=_ph("終了(分)", st.get("end_min")),
             row=4
         ))
 
@@ -104,9 +143,33 @@ class SetupWizardViewStep2(discord.ui.View):
     def __init__(self, st: dict):
         super().__init__(timeout=600)
 
-        self.add_item(discord.ui.Button(label="戻る", style=discord.ButtonStyle.secondary, custom_id="setup:step:back", row=0))
-        self.add_item(discord.ui.Button(label="作成", style=discord.ButtonStyle.success, custom_id="setup:create", row=0))
-        self.add_item(discord.ui.Button(label="@everyone切替", style=discord.ButtonStyle.secondary, custom_id="setup:everyone:toggle", row=0))
+        everyone_on = bool(st.get("everyone"))
+        everyone_style = (
+            discord.ButtonStyle.success
+            if everyone_on
+            else discord.ButtonStyle.secondary
+        )
+
+        self.add_item(discord.ui.Button(
+            label="戻る",
+            style=discord.ButtonStyle.secondary,
+            custom_id="setup:step:back",
+            row=0
+        ))
+
+        self.add_item(discord.ui.Button(
+            label="作成",
+            style=discord.ButtonStyle.success,
+            custom_id="setup:create",
+            row=0
+        ))
+
+        self.add_item(discord.ui.Button(
+            label="@everyone ON" if everyone_on else "@everyone OFF",
+            style=everyone_style,
+            custom_id="setup:everyone:toggle",
+            row=0
+        ))
 
         self.add_item(_IntervalSelect(
             custom_id="setup:interval",
