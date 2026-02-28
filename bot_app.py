@@ -23,6 +23,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 
+
 class MyClient(discord.Client):
     def __init__(self):
         super().__init__(intents=intents)
@@ -54,7 +55,20 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
-    await super().on_interaction(interaction)
+        """
+        - Component(Button/Select) → handle_interaction に渡す
+        - Slash command 等は discord.py 標準処理に任せるため最後に super() を呼ぶ
+        """
+        try:
+            if interaction.type == discord.InteractionType.component:
+                await handle_interaction(self, interaction)
+        except Exception:
+            print("on_interaction error")
+            print(traceback.format_exc())
+
+        # これがインデント崩れると bot が即死する（今回の原因）
+        await super().on_interaction(interaction)
+
 
 @tasks.loop(seconds=60, reconnect=True)
 async def reminder_loop(bot: MyClient):
