@@ -1,53 +1,45 @@
 import traceback
 from datetime import datetime, timedelta, timezone
-
 import discord
 from views.setup_wizard import build_setup_embed, build_setup_view
 
 
-async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True):
-    try:
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=ephemeral)
-    except Exception:
-        pass
+async def safe_defer(interaction: discord.Interaction):
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=True)
 
 
-async def safe_send(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(content, ephemeral=ephemeral)
-        else:
-            await interaction.response.send_message(content, ephemeral=ephemeral)
-    except Exception:
-        pass
+async def safe_send(interaction: discord.Interaction, msg: str):
+    if interaction.response.is_done():
+        await interaction.followup.send(msg, ephemeral=True)
+    else:
+        await interaction.response.send_message(msg, ephemeral=True)
 
 
 async def _refresh_setup(interaction: discord.Interaction, st: dict):
-    try:
-        embed = build_setup_embed(st)
-        view = build_setup_view(st)
-        await interaction.message.edit(embed=embed, view=view)
-    except Exception:
-        pass
+    embed = build_setup_embed(st)
+    view = build_setup_view(st)
+    await interaction.message.edit(embed=embed, view=view)
 
 
-def _get_state(client: discord.Client, user_id: int) -> dict:
+def _get_state(client, user_id):
     if not hasattr(client, "setup_state"):
         client.setup_state = {}
-    st = client.setup_state.get(user_id)
-    if st is None:
-        st = {
+    if user_id not in client.setup_state:
+        client.setup_state[user_id] = {
+            "step": 1,
             "day": None,
-            "start": None,  # "HH:MM"
-            "end": None,    # "HH:MM"
+            "start_hour": None,
+            "start_min": None,
+            "end_hour": None,
+            "end_min": None,
+            "start": None,
+            "end": None,
             "interval": None,
             "notify_channel_id": None,
             "everyone": False,
-            "title": None,
         }
-        client.setup_state[user_id] = st
-    return st
+    return client.setup_state[user_id]
 
 
 async def handle_interaction(client, interaction: discord.Interaction):
@@ -62,110 +54,78 @@ async def handle_interaction(client, interaction: discord.Interaction):
         if not custom_id:
             return
 
-        await safe_defer(interaction, ephemeral=True)
+        await safe_defer(interaction)
+        st = _get_state(client, interaction.user.id)
 
-        # -----------------------------
-        # 予約パネル（既存）
-        # -----------------------------
-        if custom_id.startswith("panel:slot:"):
-            parts = custom_id.split(":")
-            panel_id = int(parts[2])
-            slot_id = int(parts[3])
-
-            ok, msg = await client.dm.toggle_reserve(
-                slot_id=slot_id,
-                user_id=str(interaction.user.id),
-                user_name=getattr(interaction.user, "display_name", str(interaction.user)),
-            )
-
-            await client.dm.render_panel(client, panel_id)
-            await safe_send(interaction, msg)
-            return
-
-        # -----------------------------
-        # setupウィザード
-        # -----------------------------
-        if custom_id.startswith("setup:"):
-            st = _get_state(client, interaction.user.id)
-
-            if custom_id == "setup:day:today":
-                st["day"] = "today"
-            elif custom_id == "setup:day:tomorrow":
-                st["day"] = "tomorrow"
-
-            elif custom_id == "setup:start_time" and values:
-                st["start"] = values[0]
-            elif custom_id == "setup:end_time" and values:
-                st["end"] = values[0]
-
-            elif custom_id == "setup:interval" and values:
-                st["interval"] = int(values[0])
-
-            elif custom_id == "setup:notify_channel" and values:
-                st["notify_channel_id"] = str(values[0])
-
-            elif custom_id == "setup:everyone:toggle":
-                st["everyone"] = not st["everyone"]
-
-            # 作成ボタン
-            if custom_id == "setup:create":
-                missing = []
-                if not st.get("day"): missing.append("今日/明日")
-                if not st.get("start"): missing.append("開始")
-                if not st.get("end"): missing.append("終了")
-                if not st.get("interval"): missing.append("間隔")
-                if not st.get("notify_channel_id"): missing.append("通知チャンネル")
-
-                if missing:
-                    await safe_send(interaction, "❌ 未入力: " + " / ".join(missing))
-                    await _refresh_setup(interaction, st)
-                    return
-
-                JST = timezone(timedelta(hours=9))
-                today = datetime.now(JST).date()
-                day = today if st["day"] == "today" else today + timedelta(days=1)
-
-                sh, sm = map(int, st["start"].split(":"))
-                eh, em = map(int, st["end"].split(":"))
-
-                start_at = datetime(day.year, day.month, day.day, sh, sm, tzinfo=JST)
-                end_at = datetime(day.year, day.month, day.day, eh, em, tzinfo=JST)
-                if end_at <= start_at:
-                    end_at += timedelta(days=1)
-
-                res = await client.dm.create_panel(
-                    guild_id=str(interaction.guild_id),
-                    channel_id=str(interaction.channel_id),
-                    day_date=day,
-                    title=st.get("title"),
-                    start_at=start_at,
-                    end_at=end_at,
-                    interval_minutes=int(st["interval"]),
-                    notify_channel_id=str(st["notify_channel_id"]),
-                    created_by=str(interaction.user.id),
-                )
-
-                if not res.get("ok"):
-                    await safe_send(interaction, "❌ 作成失敗（DB/権限/設定を確認）")
-                    await _refresh_setup(interaction, st)
-                    return
-
-                await client.dm.render_panel(client, int(res["panel_id"]))
-
-                try:
-                    client.setup_state.pop(interaction.user.id, None)
-                except Exception:
-                    pass
-
-                await safe_send(interaction, "✅ 作成完了")
-                return
-
+        if custom_id == "setup:step:next":
+            st["step"] = 2
             await _refresh_setup(interaction, st)
             return
 
-        await safe_send(interaction, f"unknown custom_id: {custom_id}")
+        if custom_id == "setup:step:back":
+            st["step"] = 1
+            await _refresh_setup(interaction, st)
+            return
+
+        if custom_id == "setup:day:today":
+            st["day"] = "today"
+
+        elif custom_id == "setup:day:tomorrow":
+            st["day"] = "tomorrow"
+
+        elif custom_id == "setup:start_hour":
+            st["start_hour"] = values[0]
+
+        elif custom_id == "setup:start_min":
+            st["start_min"] = values[0]
+
+        elif custom_id == "setup:end_hour":
+            st["end_hour"] = values[0]
+
+        elif custom_id == "setup:end_min":
+            st["end_min"] = values[0]
+
+        elif custom_id == "setup:interval":
+            st["interval"] = int(values[0])
+
+        elif custom_id == "setup:notify_channel":
+            st["notify_channel_id"] = str(values[0])
+
+        elif custom_id == "setup:everyone:toggle":
+            st["everyone"] = not st["everyone"]
+
+        if st.get("start_hour") and st.get("start_min"):
+            st["start"] = f"{st['start_hour']}:{st['start_min']}"
+
+        if st.get("end_hour") and st.get("end_min"):
+            st["end"] = f"{st['end_hour']}:{st['end_min']}"
+
+        if custom_id == "setup:create":
+            missing = []
+            for k in ["day", "start", "end", "interval", "notify_channel_id"]:
+                if not st.get(k):
+                    missing.append(k)
+
+            if missing:
+                await safe_send(interaction, f"未入力: {', '.join(missing)}")
+                return
+
+            JST = timezone(timedelta(hours=9))
+            today = datetime.now(JST).date()
+            day = today if st["day"] == "today" else today + timedelta(days=1)
+
+            sh, sm = map(int, st["start"].split(":"))
+            eh, em = map(int, st["end"].split(":"))
+
+            start_at = datetime(day.year, day.month, day.day, sh, sm, tzinfo=JST)
+            end_at = datetime(day.year, day.month, day.day, eh, em, tzinfo=JST)
+
+            await safe_send(interaction, "✅ 作成完了（ここにDB処理入れる）")
+            client.setup_state.pop(interaction.user.id, None)
+            return
+
+        await _refresh_setup(interaction, st)
 
     except Exception as e:
-        print("handle_interaction error:", repr(e))
         print(traceback.format_exc())
-        await safe_send(interaction, f"❌ エラー: {repr(e)}")
+        await safe_send(interaction, f"エラー: {e}")
