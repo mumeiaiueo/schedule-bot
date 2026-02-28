@@ -41,8 +41,8 @@ class SetupWizardView(discord.ui.View):
         self.add_item(_MinSelect(custom_id="setup:start_min", placeholder="開始(分)", row=2))
 
         # ---- Row 2: end hour/min
-        self.add_item(_HourSelect(custom_id="setup:end_hour", placeholder="終了(時)", row=2))
-        self.add_item(_MinSelect(custom_id="setup:end_min", placeholder="終了(分)", row=2))
+        self.add_item(_HourSelect(custom_id="setup:end_hour", placeholder="終了(時)", row=3))
+        self.add_item(_MinSelect(custom_id="setup:end_min", placeholder="終了(分)", row=4))
 
         # ---- Row 3: interval + notify channel
         self.add_item(_IntervalSelect(custom_id="setup:interval", placeholder="間隔(分)", row=3))
