@@ -38,7 +38,7 @@ class SetupWizardView(discord.ui.View):
 
         # ---- Row 1: start hour/min
         self.add_item(_HourSelect(custom_id="setup:start_hour", placeholder="開始(時)", row=1))
-        self.add_item(_MinSelect(custom_id="setup:start_min", placeholder="開始(分)", row=1))
+        self.add_item(_MinSelect(custom_id="setup:start_min", placeholder="開始(分)", row=2))
 
         # ---- Row 2: end hour/min
         self.add_item(_HourSelect(custom_id="setup:end_hour", placeholder="終了(時)", row=2))
