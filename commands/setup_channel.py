@@ -6,7 +6,7 @@ from discord import app_commands
 from views.setup_wizard import build_setup_embed, build_setup_view
 
 
-def _default_state():
+def _new_state() -> dict:
     return {
         "day": None,
         "start_hour": None,
@@ -26,21 +26,21 @@ def register(tree: app_commands.CommandTree, dm):
     @tree.command(name="setup_channel", description="このチャンネル用の予約枠を作成（ウィザード）")
     async def setup_channel(interaction: discord.Interaction):
         try:
-            # ✅ 状態を bot に保存（ユーザーごと）
-            bot = interaction.client
-            if not hasattr(bot, "setup_state") or bot.setup_state is None:
-                bot.setup_state = {}
+            # 3秒以内ACK（これが無いと「アプリケーションが応答しません」）
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
 
-            st = bot.setup_state.get(interaction.user.id)
-            if st is None:
-                st = _default_state()
-                bot.setup_state[interaction.user.id] = st
+            client = interaction.client
+            if not hasattr(client, "setup_state"):
+                client.setup_state = {}
+
+            st = _new_state()
+            client.setup_state[interaction.user.id] = st
 
             embed = build_setup_embed(st)
             view = build_setup_view(st)
 
-            # ✅ defer+followup じゃなくて、最初から send_message でACK確定（応答なし対策）
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "📅 今日 or 明日を選んでください",
                 embed=embed,
                 view=view,
