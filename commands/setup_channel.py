@@ -35,6 +35,7 @@ def register(tree: app_commands.CommandTree, dm):
                 client.setup_state = {}
 
             st = _new_state()
+            st["day"] = "today"   
             client.setup_state[interaction.user.id] = st
 
             embed = build_setup_embed(st)
