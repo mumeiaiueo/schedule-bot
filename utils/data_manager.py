@@ -9,10 +9,6 @@ from views.panel_view import PanelView, BreakSelectView, build_panel_embed
 
 
 class DataManager:
-    def __init__(self):
-        # render連打防止（panel_id単位でロック）
-        self._render_locks: dict[int, asyncio.Lock] = {}
-
     async def _db(self, fn):
         return await asyncio.to_thread(fn)
 
@@ -47,10 +43,7 @@ class DataManager:
 
         def work():
             sb.table("guild_settings").upsert(
-                {
-                    "guild_id": int(guild_id),
-                    "manager_role_id": role_id,
-                },
+                {"guild_id": int(guild_id), "manager_role_id": role_id},
                 on_conflict="guild_id",
             ).execute()
 
@@ -98,21 +91,22 @@ class DataManager:
     ):
         self._require_db()
 
+        # パネル作成（重複があると例外→わかりやすいメッセにする）
         try:
             def work_insert_panel():
                 return (
                     sb.table("panels")
                     .insert(
                         {
-                            "guild_id": str(guild_id),
-                            "channel_id": str(channel_id),
+                            "guild_id": guild_id,
+                            "channel_id": channel_id,
                             "day": str(day_date),
                             "title": title,
                             "start_at": to_utc_iso(start_at),
                             "end_at": to_utc_iso(end_at),
                             "interval_minutes": int(interval_minutes),
-                            "notify_channel_id": str(notify_channel_id),
-                            "created_by": str(created_by),
+                            "notify_channel_id": notify_channel_id,
+                            "created_by": created_by,
                             "notify_enabled": True,
                             "notify_paused": False,
                         }
@@ -122,6 +116,7 @@ class DataManager:
                 )
 
             panel = await self._db(work_insert_panel)
+
         except Exception:
             return {
                 "ok": False,
@@ -133,6 +128,7 @@ class DataManager:
 
         panel_id = panel[0]["id"]
 
+        # slots 作成
         inserts = []
         cur = start_at
         while cur < end_at:
@@ -147,7 +143,6 @@ class DataManager:
                     "reserver_name": None,
                     "reserved_at": None,
                     "notified": False,
-                    # slots側は int で持つ前提（あなたの既存コード互換）
                     "channel_id": int(channel_id),
                     "guild_id": int(guild_id),
                     "slot_time": fmt_hm(cur),
@@ -164,11 +159,10 @@ class DataManager:
         return {"ok": True, "panel_id": panel_id}
 
     # -----------------------------
-    # reset 用：指定日の募集を削除（slotsも消す）
+    # ✅ reset 用：指定日の募集を削除（/reset_channel が呼ぶ）
     # -----------------------------
     async def delete_panel_by_channel_day(self, guild_id: str, channel_id: str, day_date) -> bool:
         """
-        /reset_channel 用
         指定 guild/channel/day の panel を消す（slots も一緒に消す）
         """
         self._require_db()
@@ -178,34 +172,9 @@ class DataManager:
             panels = (
                 sb.table("panels")
                 .select("id")
-                .eq("guild_id", str(guild_id))
-                .eq("channel_id", str(channel_id))
+                .eq("guild_id", guild_id)
+                .eq("channel_id", channel_id)
                 .eq("day", day_str)
-                .execute()
-                .data
-                or []
-            )
-
-            panel_ids = [p["id"] for p in panels]
-            if not panel_ids:
-                return False
-
-            sb.table("slots").delete().in_("panel_id", panel_ids).execute()
-            sb.table("panels").delete().in_("id", panel_ids).execute()
-            return True
-
-        return await self._db(work)
-
-    # （互換用：日付指定なし削除が欲しい場合）
-    async def delete_panel(self, guild_id: str, channel_id: str) -> bool:
-        self._require_db()
-
-        def work():
-            panels = (
-                sb.table("panels")
-                .select("id")
-                .eq("guild_id", str(guild_id))
-                .eq("channel_id", str(channel_id))
                 .execute()
                 .data
                 or []
@@ -213,106 +182,97 @@ class DataManager:
             panel_ids = [p["id"] for p in panels]
             if panel_ids:
                 sb.table("slots").delete().in_("panel_id", panel_ids).execute()
-                sb.table("panels").delete().eq("guild_id", str(guild_id)).eq("channel_id", str(channel_id)).execute()
+                sb.table("panels").delete().in_("id", panel_ids).execute()
                 return True
             return False
 
         return await self._db(work)
 
     # -----------------------------
-    # render（429対策：ロック＋軽いスリープ）
+    # render
     # -----------------------------
     async def render_panel(self, bot: discord.Client, panel_id: int):
         self._require_db()
 
-        # panel_id単位のロック（連打で429になりやすいので抑える）
-        lock = self._render_locks.get(panel_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._render_locks[panel_id] = lock
+        def work_panel():
+            return sb.table("panels").select("*").eq("id", panel_id).execute().data
 
-        async with lock:
-            def work_panel():
-                return sb.table("panels").select("*").eq("id", panel_id).execute().data
+        panel_rows = await self._db(work_panel)
+        if not panel_rows:
+            return
+        panel = panel_rows[0]
 
-            panel_rows = await self._db(work_panel)
-            if not panel_rows:
+        channel = bot.get_channel(int(panel["channel_id"]))
+        if not channel:
+            return
+
+        def work_slots():
+            return (
+                sb.table("slots")
+                .select("*")
+                .eq("panel_id", panel_id)
+                .order("start_at")
+                .execute()
+                .data
+                or []
+            )
+
+        slots = await self._db(work_slots)
+
+        lines = []
+        buttons = []
+
+        for r in slots[:25]:
+            sdt = from_utc_iso(r["start_at"])
+            label = fmt_hm(sdt)
+
+            if r.get("is_break"):
+                dot = "⚪"
+                mention = ""
+                style = discord.ButtonStyle.secondary
+                disabled = True
+            elif r.get("reserver_user_id"):
+                dot = "🔴"
+                mention = f" <@{r['reserver_user_id']}>"
+                style = discord.ButtonStyle.danger
+                disabled = False
+            else:
+                dot = "🟢"
+                mention = ""
+                style = discord.ButtonStyle.success
+                disabled = False
+
+            lines.append(f"{dot} {label}{mention}")
+            buttons.append(
+                {
+                    "slot_id": r["id"],
+                    "label": label,
+                    "style": style,
+                    "disabled": disabled,
+                }
+            )
+
+        day_text = f"📅 {panel['day']}（JST） / interval {panel['interval_minutes']}min"
+        title = panel.get("title") or "募集パネル"
+        embed = build_panel_embed(title, day_text, lines)
+
+        view = PanelView(panel_id, buttons)
+
+        mid = panel.get("panel_message_id")
+        if mid:
+            try:
+                msg = await channel.fetch_message(int(mid))
+                await msg.edit(embed=embed, view=view)
                 return
-            panel = panel_rows[0]
+            except Exception:
+                pass
 
-            channel = bot.get_channel(int(panel["channel_id"]))
-            if not channel:
-                return
+        msg = await channel.send(embed=embed, view=view)
 
-            def work_slots():
-                return (
-                    sb.table("slots")
-                    .select("*")
-                    .eq("panel_id", panel_id)
-                    .order("start_at")
-                    .execute()
-                    .data
-                    or []
-                )
+        def work_update_mid():
+            sb.table("panels").update({"panel_message_id": str(msg.id)}).eq("id", panel_id).execute()
 
-            slots = await self._db(work_slots)
-
-            lines = []
-            buttons = []
-
-            for r in slots[:25]:
-                sdt = from_utc_iso(r["start_at"])
-                label = fmt_hm(sdt)
-
-                if r.get("is_break"):
-                    dot = "⚪"
-                    mention = ""
-                    style = discord.ButtonStyle.secondary
-                    disabled = True
-                elif r.get("reserver_user_id"):
-                    dot = "🔴"
-                    mention = f" <@{r['reserver_user_id']}>"
-                    style = discord.ButtonStyle.danger
-                    disabled = False
-                else:
-                    dot = "🟢"
-                    mention = ""
-                    style = discord.ButtonStyle.success
-                    disabled = False
-
-                lines.append(f"{dot} {label}{mention}")
-                buttons.append(
-                    {
-                        "slot_id": r["id"],
-                        "label": label,
-                        "style": style,
-                        "disabled": disabled,
-                    }
-                )
-
-            day_text = f"📅 {panel['day']}（JST） / interval {panel['interval_minutes']}min"
-            title = panel.get("title") or "募集パネル"
-            embed = build_panel_embed(title, day_text, lines)
-
-            view = PanelView(panel_id, buttons)
-
-            mid = panel.get("panel_message_id")
-            if mid:
-                try:
-                    msg = await channel.fetch_message(int(mid))
-                    await msg.edit(embed=embed, view=view)
-                    await asyncio.sleep(0.3)  # API間隔を少し空ける
-                    return
-                except Exception:
-                    pass
-
-            msg = await channel.send(embed=embed, view=view)
-
-            def work_update_mid():
-                sb.table("panels").update({"panel_message_id": str(msg.id)}).eq("id", panel_id).execute()
-
-            await self._db(work_update_mid)
-            await asyncio.sleep(0.3)
+        await self._db(work_update_mid)
 
     # -----------------------------
     # reserve
@@ -478,7 +438,14 @@ class DataManager:
                 continue
 
             def work_panel():
-                return sb.table("panels").select("*").eq("id", slot["panel_id"]).execute().data or []
+                return (
+                    sb.table("panels")
+                    .select("*")
+                    .eq("id", slot["panel_id"])
+                    .execute()
+                    .data
+                    or []
+                )
 
             try:
                 panel_rows = await self._db(work_panel)
@@ -505,7 +472,6 @@ class DataManager:
             try:
                 uid = str(slot["reserver_user_id"])
                 await notify_ch.send(f"⏰ 3分前：{fmt_hm(start)} の枠です <@{uid}>")
-                await asyncio.sleep(0.2)  # 連投抑制
             except Exception:
                 continue
 
