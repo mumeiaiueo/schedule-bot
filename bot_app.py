@@ -19,11 +19,10 @@ from commands.set_manager_role import register as register_manager_role
 from bot_interact import handle_interaction
 
 load_dotenv()
-
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
-# app_commands 用に guilds は通常 default で True。念のため明示してもOK:
+# 必須：app_commands は guilds intent が必要
 intents.guilds = True
 
 
@@ -35,7 +34,7 @@ class MyClient(discord.Client):
         self._synced = False
 
     async def setup_hook(self):
-        # スラッシュコマンド登録
+        # コマンド登録
         register_setup(self.tree, self.dm)
         register_reset(self.tree, self.dm)
         register_remind(self.tree, self.dm)
@@ -44,6 +43,7 @@ class MyClient(discord.Client):
         register_manager_role(self.tree, self.dm)
 
     async def on_ready(self):
+        # sync は起動直後に1回だけ
         if not self._synced:
             try:
                 await self.tree.sync()
@@ -60,25 +60,31 @@ class MyClient(discord.Client):
 
     async def on_interaction(self, interaction: discord.Interaction):
         """
-        重要:
-        - ここで super().on_interaction は呼ばない（環境によって存在しないので落ちる）
-        - Component は bot_interact 側で safe_defer するので、ここで defer しない（40060対策）
-        - Slash command は tree 側へ流す
+        ✅ ここが重要：
+        - component(ボタン/セレクト)だけ自前処理（3秒以内に defer でACK）
+        - それ以外は CommandTree に渡す（super() は呼ばない）
         """
         try:
             if interaction.type == discord.InteractionType.component:
-                # ボタン/セレクト等
-                await handle_interaction(self, interaction)
+                # 3秒以内ACK（Unknown interaction 10062対策）
+                try:
+                    if not interaction.response.is_done():
+                        # ※ここは ephemeral=False 推奨（元メッセージ編集することが多いので）
+                        await interaction.response.defer()
+                except Exception:
+                    pass
+
+                try:
+                    await handle_interaction(self, interaction)
+                except Exception:
+                    print("on_interaction(component) error")
+                    print(traceback.format_exc())
                 return
 
-            # スラッシュ等は tree に処理させる（discord.pyのバージョン差を吸収）
-            if hasattr(self.tree, "_from_interaction"):
-                # discord.py 系
-                await self.tree._from_interaction(interaction)  # privateだが安定して動く
-            elif hasattr(self.tree, "process_interaction"):
-                # 互換用（環境によっては存在）
-                await self.tree.process_interaction(interaction)
-            # それ以外なら何もしない（落とさない）
+            # ✅ スラッシュコマンド等 → CommandTree に任せる
+            # （あなたの環境では process_interaction は無い。_from_interaction が正解）
+            await self.tree._from_interaction(interaction)
+
         except Exception:
             print("on_interaction error")
             print(traceback.format_exc())
@@ -95,15 +101,37 @@ async def reminder_loop(bot: MyClient):
         print(traceback.format_exc())
 
 
-async def run_bot(token: str):
-    client = MyClient()
-    await client.start(token)
+async def run_bot_with_backoff(token: str):
+    """
+    ✅ 429 が出ても即死しない（待って再試行）
+    Render の再起動連打 → 429 の悪循環を止める
+    """
+    backoff = 5
+    while True:
+        client = MyClient()
+        try:
+            await client.start(token)
+            return
+        except discord.HTTPException as e:
+            # 429 対策
+            if getattr(e, "status", None) == 429:
+                print(f"⚠️ 429 Too Many Requests. sleep {backoff}s then retry...")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 300)  # 最大5分
+                continue
+            raise
+        except Exception:
+            print("❌ fatal error (run_bot)")
+            print(traceback.format_exc())
+            # 連続クラッシュでログイン連打しないよう待つ
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 300)
 
 
 def main():
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN 未設定")
-    asyncio.run(run_bot(TOKEN))
+    asyncio.run(run_bot_with_backoff(TOKEN))
 
 
 if __name__ == "__main__":
