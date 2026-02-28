@@ -22,6 +22,11 @@ def build_setup_embed(st: dict) -> discord.Embed:
     return e
 
 
+def _ph(base: str, val: str | None) -> str:
+    # placeholderに選択値を表示
+    return f"{base} [{val}]" if val else base
+
+
 class _HourSelect(discord.ui.Select):
     def __init__(self, *, custom_id: str, placeholder: str, row: int):
         options = [discord.SelectOption(label=f"{h:02d}", value=f"{h:02d}") for h in range(24)]
@@ -51,7 +56,8 @@ class _MinSelect(discord.ui.Select):
 
 class _IntervalSelect(discord.ui.Select):
     def __init__(self, *, custom_id: str, placeholder: str, row: int):
-        values = [5, 10, 15, 20, 30, 60]
+        # ✅ 指定：20 / 25 / 30
+        values = [20, 25, 30]
         options = [discord.SelectOption(label=f"{v}分", value=str(v)) for v in values]
         super().__init__(
             custom_id=custom_id,
@@ -72,10 +78,26 @@ class SetupWizardViewStep1(discord.ui.View):
         self.add_item(discord.ui.Button(label="@everyone切替", style=discord.ButtonStyle.secondary, custom_id="setup:everyone:toggle", row=0))
         self.add_item(discord.ui.Button(label="次へ", style=discord.ButtonStyle.success, custom_id="setup:step:next", row=0))
 
-        self.add_item(_HourSelect(custom_id="setup:start_hour", placeholder="開始(時)", row=1))
-        self.add_item(_MinSelect(custom_id="setup:start_min", placeholder="開始(分) 5分刻み", row=2))
-        self.add_item(_HourSelect(custom_id="setup:end_hour", placeholder="終了(時)", row=3))
-        self.add_item(_MinSelect(custom_id="setup:end_min", placeholder="終了(分) 5分刻み", row=4))
+        self.add_item(_HourSelect(
+            custom_id="setup:start_hour",
+            placeholder=_ph("開始(時)", st.get("start_hour")),
+            row=1
+        ))
+        self.add_item(_MinSelect(
+            custom_id="setup:start_min",
+            placeholder=_ph("開始(分) 5分刻み", st.get("start_min")),
+            row=2
+        ))
+        self.add_item(_HourSelect(
+            custom_id="setup:end_hour",
+            placeholder=_ph("終了(時)", st.get("end_hour")),
+            row=3
+        ))
+        self.add_item(_MinSelect(
+            custom_id="setup:end_min",
+            placeholder=_ph("終了(分) 5分刻み", st.get("end_min")),
+            row=4
+        ))
 
 
 class SetupWizardViewStep2(discord.ui.View):
@@ -86,11 +108,15 @@ class SetupWizardViewStep2(discord.ui.View):
         self.add_item(discord.ui.Button(label="作成", style=discord.ButtonStyle.success, custom_id="setup:create", row=0))
         self.add_item(discord.ui.Button(label="@everyone切替", style=discord.ButtonStyle.secondary, custom_id="setup:everyone:toggle", row=0))
 
-        self.add_item(_IntervalSelect(custom_id="setup:interval", placeholder="間隔(分)", row=1))
+        self.add_item(_IntervalSelect(
+            custom_id="setup:interval",
+            placeholder=_ph("間隔(分)", str(st.get("interval")) if st.get("interval") else None),
+            row=1
+        ))
 
         self.add_item(discord.ui.ChannelSelect(
             custom_id="setup:notify_channel",
-            placeholder="通知チャンネル",
+            placeholder=_ph("通知チャンネル", ("設定済み" if st.get("notify_channel_id") else None)),
             channel_types=[discord.ChannelType.text],
             min_values=1,
             max_values=1,
