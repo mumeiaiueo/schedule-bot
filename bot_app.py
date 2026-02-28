@@ -54,16 +54,7 @@ class MyClient(discord.Client):
             reminder_loop.start(self)
 
     async def on_interaction(self, interaction: discord.Interaction):
-    # ✅ これがないとスラッシュコマンドが処理されない
-        await super().on_interaction(interaction)
-
-    # （必要なら）追加の独自処理だけ後ろでやる
-    try:
-        await handle_interaction(self, interaction)
-    except Exception:
-        print("on_interaction error")
-        print(traceback.format_exc())
-
+    await super().on_interaction(interaction)
 
 @tasks.loop(seconds=60, reconnect=True)
 async def reminder_loop(bot: MyClient):
