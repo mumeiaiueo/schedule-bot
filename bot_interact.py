@@ -188,16 +188,17 @@ async def handle_setup(bot: discord.Client, interaction: discord.Interaction, dm
 
         try:
             res = await dm.create_panel(
-                guild_id=str(interaction.guild_id),
-                channel_id=str(interaction.channel_id),
-                day_date=day_date,
-                title=st.get("title"),
-                start_at=start_at,
-                end_at=end_at,
-                interval_minutes=int(st["interval"]),
-                notify_channel_id=str(st["notify_channel_id"]),
-                created_by=str(interaction.user.id),
-            )
+    guild_id=str(interaction.guild_id),
+    channel_id=str(interaction.channel_id),
+    day_date=day_date,
+    title=st.get("title"),
+    start_at=start_at,
+    end_at=end_at,
+    interval_minutes=int(st["interval"]),
+    notify_channel_id=str(st["notify_channel_id"]),
+    created_by=str(interaction.user.id),
+    everyone=bool(st.get("everyone", False)),  # ✅ 追加
+)
 
             if not res.get("ok"):
                 await _safe_ephemeral(interaction, "❌ 作成失敗")
