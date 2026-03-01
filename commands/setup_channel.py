@@ -9,7 +9,7 @@ from views.setup_wizard import build_setup_embed, build_setup_view
 def _new_state() -> dict:
     return {
         "step": 1,
-        "day": "today",
+        "day": "today",  # デフォルト今日
         "start_hour": None,
         "start_min": None,
         "end_hour": None,
@@ -17,7 +17,6 @@ def _new_state() -> dict:
         "start": None,
         "end": None,
         "interval": None,
-        "notify_channel_id": None,
         "everyone": False,
         "title": None,
     }
@@ -28,7 +27,7 @@ def register(tree: app_commands.CommandTree, dm):
     async def setup_channel(interaction: discord.Interaction):
         try:
             client = interaction.client
-            if not hasattr(client, "setup_state"):
+            if not hasattr(client, "setup_state") or client.setup_state is None:
                 client.setup_state = {}
 
             st = _new_state()
@@ -37,7 +36,6 @@ def register(tree: app_commands.CommandTree, dm):
             embed = build_setup_embed(st)
             view = build_setup_view(st)
 
-            # 🔥 deferは使わない
             await interaction.response.send_message(
                 "📅 設定を進めてください（デフォルト：今日）",
                 embed=embed,
@@ -50,6 +48,6 @@ def register(tree: app_commands.CommandTree, dm):
             print(traceback.format_exc())
             try:
                 if not interaction.response.is_done():
-                    await interaction.response.send_message("❌ setup_channel 内部エラー", ephemeral=True)
+                    await interaction.response.send_message("❌ setup_channel 内部エラー（ログ確認）", ephemeral=True)
             except Exception:
                 pass
