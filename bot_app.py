@@ -5,7 +5,7 @@ from discord.ext import tasks
 from discord import app_commands
 
 from utils.data_manager import DataManager
-from bot_interact import handle_component_or_modal
+from bot_interact import handle_component
 
 from commands.setup import register as register_setup
 from commands.reset import register as register_reset
