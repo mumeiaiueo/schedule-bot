@@ -1,6 +1,5 @@
 import discord
 from typing import List, Dict
-from utils.time_utils import fmt_hm
 
 
 def build_panel_embed(title: str | None, day_text: str, lines: list[str]):
@@ -15,16 +14,16 @@ def build_panel_embed(title: str | None, day_text: str, lines: list[str]):
 class PanelView(discord.ui.View):
     """
     ✅ callbackを使わない（B方式）
-    - custom_id だけ付けて、main.py の on_interaction で処理する
+    - custom_id だけ付けて、bot_app.py の on_interaction → bot_interact.py で処理
     """
-    def __init__(self, panel_id: int, buttons: List[Dict]):
+    def __init__(self, panel_id: int, buttons: List[Dict], notify_paused: bool = False):
         super().__init__(timeout=None)
 
-        # ✅ 休憩ボタンを最後に置くので、枠ボタンは最大24にする（row 0..4 を絶対超えない）
-        slot_buttons = buttons[:24]
+        # ✅ row4 を管理ボタン専用にするので、枠ボタンは最大20（row0..3）
+        slot_buttons = buttons[:20]
 
         for i, b in enumerate(slot_buttons):
-            row = min(4, i // 5)  # ✅ row エラー防止
+            row = i // 5  # 0..3
             self.add_item(discord.ui.Button(
                 label=b["label"],
                 style=b["style"],
@@ -33,7 +32,18 @@ class PanelView(discord.ui.View):
                 row=row
             ))
 
-        # ✅ 休憩切替ボタン（必ず row 4 に置く：row>=5 バグ防止）
+        # ✅ 通知 ON/OFF（管理者/管理ロール）
+        notify_style = discord.ButtonStyle.secondary if notify_paused else discord.ButtonStyle.success
+        notify_label = "🔕 通知OFF" if notify_paused else "🔔 通知ON"
+
+        self.add_item(discord.ui.Button(
+            label=notify_label,
+            style=notify_style,
+            custom_id=f"panel:notifytoggle:{panel_id}",
+            row=4
+        ))
+
+        # ✅ 休憩切替ボタン（管理者/管理ロール）
         self.add_item(discord.ui.Button(
             label="🛠 休憩切替（管理者/管理ロール）",
             style=discord.ButtonStyle.secondary,
