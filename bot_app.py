@@ -7,10 +7,10 @@ from discord import app_commands
 from utils.data_manager import DataManager
 from bot_interact import handle_component_or_modal
 
-# commands
-from commands.setup_channel import register as register_setup_channel
-from commands.reset_channel import register as register_reset_channel
-from commands.set_manager_role import register as register_set_manager_role
+# commands（今のファイル名に合わせる）
+from commands.setup import register as register_setup
+from commands.reset import register as register_reset
+from commands.manager_role import register as register_manager_role
 
 
 class BotApp(discord.Client):
@@ -23,9 +23,9 @@ class BotApp(discord.Client):
         self.dm = DataManager()
 
     async def setup_hook(self):
-        register_setup_channel(self.tree, self.dm)
-        register_reset_channel(self.tree, self.dm)
-        register_set_manager_role(self.tree, self.dm)
+        register_setup(self.tree, self.dm)
+        register_reset(self.tree, self.dm)
+        register_manager_role(self.tree, self.dm)
 
         await self.tree.sync()
         self.reminder_loop.start()
@@ -44,7 +44,7 @@ class BotApp(discord.Client):
                 # ボタン/セレクト
                 try:
                     if not interaction.response.is_done():
-                        await interaction.response.defer()  # followup前提
+                        await interaction.response.defer()
                 except Exception:
                     pass
                 await handle_component_or_modal(self, interaction)
@@ -60,7 +60,7 @@ class BotApp(discord.Client):
                 await handle_component_or_modal(self, interaction)
                 return
 
-            # スラッシュコマンドは tree に任せる（deferは各コマンド内でやる）
+            # スラッシュコマンドは tree に任せる
             if interaction.type == discord.InteractionType.application_command:
                 await self.tree._call(interaction)
                 return
