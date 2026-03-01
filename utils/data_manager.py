@@ -189,6 +189,40 @@ class DataManager:
         return await self._db(work)
 
     # -----------------------------
+    # ✅ notify toggle（panel単位＝チャンネル単位）
+    # -----------------------------
+    async def toggle_notify_paused(self, panel_id: int):
+        """
+        panels.notify_paused をトグルする（True=通知停止 / False=通知ON）
+        """
+        self._require_db()
+
+        def work_get():
+            rows = (
+                sb.table("panels")
+                .select("notify_paused")
+                .eq("id", panel_id)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            return rows
+
+        rows = await self._db(work_get)
+        if not rows:
+            return (False, "パネルが見つかりません")
+
+        cur = bool(rows[0].get("notify_paused", False))
+        new_val = not cur
+
+        def work_upd():
+            sb.table("panels").update({"notify_paused": new_val}).eq("id", panel_id).execute()
+
+        await self._db(work_upd)
+        return (True, "通知をOFFにしました" if new_val else "通知をONにしました")
+
+    # -----------------------------
     # render
     # -----------------------------
     async def render_panel(self, bot: discord.Client, panel_id: int):
@@ -256,7 +290,8 @@ class DataManager:
         title = panel.get("title") or "募集パネル"
         embed = build_panel_embed(title, day_text, lines)
 
-        view = PanelView(panel_id, buttons)
+        # ✅ notify_paused を view に渡す（通知ボタンの表示用）
+        view = PanelView(panel_id, buttons, notify_paused=bool(panel.get("notify_paused", False)))
 
         mid = panel.get("panel_message_id")
         if mid:
