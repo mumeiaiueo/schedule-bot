@@ -2,52 +2,45 @@
 from __future__ import annotations
 
 import traceback
-from datetime import datetime, timedelta
+from datetime import timedelta
 import discord
 
-from utils.time_utils import jst_now
+from utils.time_utils import jst_now, build_range_jst
 from views.setup_wizard import build_setup_embed, build_setup_view
 
 
-# -----------------------------
-# Setup Wizard State
-# -----------------------------
 def _default_setup_state() -> dict:
     return {
         "step": 1,
-        "day": "today",      # ✅ デフォルト今日
+        "day": "today",
         "start_hour": None,
         "start_min": None,
         "end_hour": None,
         "end_min": None,
-        "start": None,       # "HH:MM"
-        "end": None,         # "HH:MM"
-        "interval": None,    # int minutes
+        "start": None,
+        "end": None,
+        "interval": None,
+        "notify_channel_id": None,
         "everyone": False,
         "title": None,
+        "wizard_message_id": None,
+        "wizard_channel_id": None,
     }
 
 
 def _ensure_setup_state(client: discord.Client, user_id: int) -> dict:
     if not hasattr(client, "setup_state") or client.setup_state is None:
         client.setup_state = {}
-
     st = client.setup_state.get(user_id)
     if not isinstance(st, dict):
         st = _default_setup_state()
         client.setup_state[user_id] = st
-
-    base = _default_setup_state()
-    for k, v in base.items():
+    for k, v in _default_setup_state().items():
         st.setdefault(k, v)
-
-    if st.get("step") not in (1, 2):
-        st["step"] = 1
-
-    # dayは常に today/tomorrow どっちか
     if st.get("day") not in ("today", "tomorrow"):
         st["day"] = "today"
-
+    if st.get("step") not in (1, 2):
+        st["step"] = 1
     return st
 
 
@@ -56,31 +49,17 @@ def _recalc_hm(st: dict):
         st["start"] = f"{int(st['start_hour']):02d}:{int(st['start_min']):02d}"
     else:
         st["start"] = None
-
     if st.get("end_hour") is not None and st.get("end_min") is not None:
         st["end"] = f"{int(st['end_hour']):02d}:{int(st['end_min']):02d}"
     else:
         st["end"] = None
 
 
-def _parse_hm(hm: str) -> tuple[int, int] | None:
-    try:
-        h, m = hm.split(":")
-        return int(h), int(m)
-    except Exception:
-        return None
-
-
 def _build_day_date(day_key: str):
     now = jst_now()
-    if day_key == "tomorrow":
-        return (now + timedelta(days=1)).date()
-    return now.date()
+    return (now + timedelta(days=1)).date() if day_key == "tomorrow" else now.date()
 
 
-# -----------------------------
-# Interaction safe helpers
-# -----------------------------
 async def _safe_ephemeral(interaction: discord.Interaction, text: str):
     try:
         if interaction.response.is_done():
@@ -91,178 +70,94 @@ async def _safe_ephemeral(interaction: discord.Interaction, text: str):
         pass
 
 
-async def _safe_edit_message(interaction: discord.Interaction, *, embed=None, view=None, content=None):
+async def _edit_wizard_message(bot: discord.Client, st: dict, *, embed=None, view=None, content=None):
     try:
-        if interaction.message:
-            await interaction.message.edit(content=content, embed=embed, view=view)
+        ch = bot.get_channel(int(st["wizard_channel_id"])) if st.get("wizard_channel_id") else None
+        mid = st.get("wizard_message_id")
+        if not ch or not mid:
             return
+        msg = await ch.fetch_message(int(mid))
+        await msg.edit(content=content, embed=embed, view=view)
     except Exception:
         pass
-    try:
-        await interaction.edit_original_response(content=content, embed=embed, view=view)
-    except Exception:
-        pass
 
 
-# -----------------------------
-# custom_id parsers
-# -----------------------------
-def _parse_panel_slot(custom_id: str) -> tuple[int, int] | None:
-    if not custom_id.startswith("panel:slot:"):
-        return None
-    parts = custom_id.split(":")
-    if len(parts) < 4:
-        return None
-    try:
-        return int(parts[2]), int(parts[3])
-    except Exception:
-        return None
+class TitleModal(discord.ui.Modal, title="募集タイトル"):
+    title_input = discord.ui.TextInput(
+        label="タイトル（空欄OK）",
+        required=False,
+        max_length=50,
+        placeholder="例：夜ランク募集 / 〇〇周回 など",
+    )
+
+    def __init__(self, bot: discord.Client, user_id: int):
+        super().__init__()
+        self.bot = bot
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        st = _ensure_setup_state(self.bot, self.user_id)
+        st["title"] = str(self.title_input.value).strip() or None
+        _recalc_hm(st)
+        embed = build_setup_embed(st)
+        view = build_setup_view(st)
+        await _edit_wizard_message(self.bot, st, embed=embed, view=view)
+        await _safe_ephemeral(interaction, "✅ タイトルを設定しました")
 
 
-def _parse_breaktoggle(custom_id: str) -> int | None:
-    if not custom_id.startswith("panel:breaktoggle:"):
-        return None
-    parts = custom_id.split(":")
-    if len(parts) < 3:
-        return None
-    try:
-        return int(parts[2])
-    except Exception:
-        return None
-
-
-def _parse_breakselect(custom_id: str) -> int | None:
-    if not custom_id.startswith("panel:breakselect:"):
-        return None
-    parts = custom_id.split(":")
-    if len(parts) < 3:
-        return None
-    try:
-        return int(parts[2])
-    except Exception:
-        return None
-
-
-def _parse_notifytoggle(custom_id: str) -> int | None:
-    if not custom_id.startswith("panel:notifytoggle:"):
-        return None
-    parts = custom_id.split(":")
-    if len(parts) < 3:
-        return None
-    try:
-        return int(parts[2])
-    except Exception:
-        return None
-
-
-# -----------------------------
-# Title modal
-# -----------------------------
-class TitleModal(discord.ui.Modal, title="募集タイトルを入力"):
-    def __init__(self):
-        super().__init__(timeout=180)
-        self.t = discord.ui.TextInput(
-            label="タイトル",
-            placeholder="例：テスト / お部屋募集 / etc",
-            required=False,
-            max_length=60,
-        )
-        self.add_item(self.t)
-
-
-# -----------------------------
-# Setup Wizard Handler
-# -----------------------------
 async def handle_setup_wizard(bot: discord.Client, interaction: discord.Interaction, dm):
-    user_id = interaction.user.id
-    st = _ensure_setup_state(bot, user_id)
-
+    st = _ensure_setup_state(bot, interaction.user.id)
     data = interaction.data or {}
     custom_id = data.get("custom_id")
     values = data.get("values") or []
 
-    # --- modal submit (title)
-    if interaction.type == discord.InteractionType.modal_submit:
-        # modal custom_id は "setup:title_modal"
-        if custom_id == "setup:title_modal":
-            # discord.py は components から取り出すのが面倒なので Modal側で値は入らない。
-            # ここでは interaction.data から直接引く。
-            try:
-                comps = (interaction.data or {}).get("components") or []
-                # components -> [ { "components": [ {"value": "..."} ] } ]
-                val = None
-                for row in comps:
-                    for c in row.get("components", []):
-                        if "value" in c:
-                            val = c["value"]
-                st["title"] = (val or "").strip() or None
-            except Exception:
-                pass
+    try:
+        # -------- buttons
+        if custom_id == "setup:day:today":
+            st["day"] = "today"
+        elif custom_id == "setup:day:tomorrow":
+            st["day"] = "tomorrow"
+        elif custom_id == "setup:everyone:toggle":
+            st["everyone"] = not bool(st.get("everyone"))
 
+        elif custom_id == "setup:step:next":
             _recalc_hm(st)
-            embed = build_setup_embed(st)
-            view = build_setup_view(st)
-            await _safe_edit_message(interaction, embed=embed, view=view)
-            await _safe_ephemeral(interaction, "✅ タイトルを更新しました")
-            return
-
-    # --- buttons/selects
-    if custom_id == "setup:day:today":
-        st["day"] = "today"
-    elif custom_id == "setup:day:tomorrow":
-        st["day"] = "tomorrow"
-    elif custom_id == "setup:everyone:toggle":
-        st["everyone"] = not bool(st.get("everyone"))
-
-    elif custom_id == "setup:title:open":
-        # モーダル表示（未ACKでもOK / 既にdefer済みだと失敗するので tryで吸収）
-        try:
-            modal = TitleModal()
-            modal.custom_id = "setup:title_modal"
-            await interaction.response.send_modal(modal)
-        except Exception:
-            # defer済み等で失敗したら、案内だけ
-            await _safe_ephemeral(interaction, "❌ モーダル表示に失敗しました。もう一度押してね")
-        return
-
-    elif custom_id == "setup:step:next":
-        _recalc_hm(st)
-        if not st.get("start") or not st.get("end"):
-            await _safe_ephemeral(interaction, "❌ 開始/終了の時刻を選んでください")
-        else:
-            sh = _parse_hm(st["start"])
-            eh = _parse_hm(st["end"])
-            if not sh or not eh:
-                await _safe_ephemeral(interaction, "❌ 時刻が不正です。選び直してね")
-            elif (eh[0], eh[1]) <= (sh[0], sh[1]):
-                await _safe_ephemeral(interaction, "❌ 終了は開始より後にしてください")
+            if not st.get("start") or not st.get("end"):
+                await _safe_ephemeral(interaction, "❌ 開始/終了の時刻を選んでください")
             else:
                 st["step"] = 2
 
-    elif custom_id == "setup:step:back":
-        st["step"] = 1
-
-    elif custom_id == "setup:create":
-        _recalc_hm(st)
-
-        if not st.get("start") or not st.get("end"):
-            await _safe_ephemeral(interaction, "❌ 開始/終了の時刻を選んでください")
+        elif custom_id == "setup:step:back":
             st["step"] = 1
-        elif not st.get("interval"):
-            await _safe_ephemeral(interaction, "❌ 間隔（分）を選んでください（20/25/30）")
-            st["step"] = 2
-        else:
-            day_date = _build_day_date(st["day"])
-            sh = _parse_hm(st["start"])
-            eh = _parse_hm(st["end"])
-            if not sh or not eh:
-                await _safe_ephemeral(interaction, "❌ 時刻が不正です。Step1で選び直してね")
-                st["step"] = 1
-            else:
-                start_at = datetime(day_date.year, day_date.month, day_date.day, sh[0], sh[1], tzinfo=jst_now().tzinfo)
-                end_at = datetime(day_date.year, day_date.month, day_date.day, eh[0], eh[1], tzinfo=jst_now().tzinfo)
 
+        elif custom_id == "setup:title:open":
+            # ✅ modalを開く（ここではACKしない）
+            await interaction.response.send_modal(TitleModal(bot, interaction.user.id))
+            return
+
+        elif custom_id == "setup:create":
+            _recalc_hm(st)
+
+            if not st.get("start") or not st.get("end"):
+                st["step"] = 1
+                await _safe_ephemeral(interaction, "❌ 開始/終了の時刻を選んでください")
+            elif not st.get("interval"):
+                st["step"] = 2
+                await _safe_ephemeral(interaction, "❌ 間隔（20/25/30）を選んでください")
+            elif not st.get("notify_channel_id"):
+                st["step"] = 2
+                await _safe_ephemeral(interaction, "❌ 通知チャンネルを選んでください")
+            else:
                 try:
+                    sh, sm = map(int, st["start"].split(":"))
+                    eh, em = map(int, st["end"].split(":"))
+                except Exception:
+                    st["step"] = 1
+                    await _safe_ephemeral(interaction, "❌ 時刻が不正です。選び直してね")
+                else:
+                    day_date = _build_day_date(st["day"])
+                    start_at, end_at = build_range_jst(day_date, sh, sm, eh, em)
+
                     res = await dm.create_panel(
                         guild_id=str(interaction.guild_id),
                         channel_id=str(interaction.channel_id),
@@ -271,173 +166,66 @@ async def handle_setup_wizard(bot: discord.Client, interaction: discord.Interact
                         start_at=start_at,
                         end_at=end_at,
                         interval_minutes=int(st["interval"]),
+                        notify_channel_id=str(st["notify_channel_id"]),
                         created_by=str(interaction.user.id),
                         everyone=bool(st.get("everyone", False)),
                     )
-
                     if not res.get("ok"):
                         await _safe_ephemeral(interaction, f"❌ 作成失敗: {res.get('error', 'unknown')}")
                     else:
                         panel_id = int(res["panel_id"])
                         await dm.render_panel(bot, panel_id)
 
-                        embed = discord.Embed(title="✅ 作成しました", description="パネルを投稿しました。", color=0x57F287)
-                        await _safe_edit_message(interaction, embed=embed, view=None)
-                        await _safe_ephemeral(interaction, "✅ 完了！チャンネルに投稿されたパネルを確認してね")
+                        # ウィザードを完了表示にしてViewを外す
+                        done = discord.Embed(title="✅ 作成しました", description="募集パネルを投稿しました。", color=0x57F287)
+                        await _edit_wizard_message(bot, st, embed=done, view=None, content="✅ 完了")
+                        await _safe_ephemeral(interaction, "✅ 完了！パネルを確認してね")
 
+                        # state削除
                         try:
                             bot.setup_state.pop(interaction.user.id, None)
                         except Exception:
                             pass
                         return
 
-                except Exception:
-                    await _safe_ephemeral(interaction, "❌ 作成中にエラー（ログ確認）")
-                    print("setup:create error")
-                    print(traceback.format_exc())
-
-    # selects
-    elif custom_id == "setup:start_hour" and values:
-        st["start_hour"] = values[0]
-    elif custom_id == "setup:start_min" and values:
-        st["start_min"] = values[0]
-    elif custom_id == "setup:end_hour" and values:
-        st["end_hour"] = values[0]
-    elif custom_id == "setup:end_min" and values:
-        st["end_min"] = values[0]
-    elif custom_id == "setup:interval" and values:
-        try:
-            st["interval"] = int(values[0])
-        except Exception:
-            st["interval"] = None
-
-    _recalc_hm(st)
-    embed = build_setup_embed(st)
-    view = build_setup_view(st)
-    await _safe_edit_message(interaction, embed=embed, view=view)
-
-
-# -----------------------------
-# Panel Handlers
-# -----------------------------
-async def handle_panel_slot(bot: discord.Client, interaction: discord.Interaction, dm, panel_id: int, slot_id: int):
-    ok, msg = await dm.toggle_reserve(
-        slot_id=slot_id,
-        user_id=str(interaction.user.id),
-        user_name=getattr(interaction.user, "display_name", None) or interaction.user.name,
-    )
-    await _safe_ephemeral(interaction, ("✅ " if ok else "❌ ") + msg)
-
-    try:
-        await dm.render_panel(bot, panel_id)
-    except Exception:
-        print("render_panel error")
-        print(traceback.format_exc())
-
-
-async def handle_notify_toggle(bot: discord.Client, interaction: discord.Interaction, dm, panel_id: int):
-    if not await dm.is_manager(interaction):
-        await _safe_ephemeral(interaction, "❌ 管理者/管理ロールのみ操作できます")
-        return
-
-    ok, msg = await dm.toggle_notify_paused(panel_id)
-    await _safe_ephemeral(interaction, ("✅ " if ok else "❌ ") + msg)
-
-    try:
-        await dm.render_panel(bot, panel_id)
-    except Exception:
-        print("render_panel error")
-        print(traceback.format_exc())
-
-
-async def handle_break_toggle(bot: discord.Client, interaction: discord.Interaction, dm, panel_id: int):
-    if not await dm.is_manager(interaction):
-        await _safe_ephemeral(interaction, "❌ 管理者/管理ロールのみ操作できます")
-        return
-
-    try:
-        view = await dm.build_break_select_view(panel_id)
-        await interaction.followup.send("🛠 休憩にする/解除する時間を選んでください", view=view, ephemeral=True)
-    except Exception:
-        print("breaktoggle error")
-        print(traceback.format_exc())
-        await _safe_ephemeral(interaction, "❌ 休憩選択の表示に失敗（ログ確認）")
-
-
-async def handle_break_select(bot: discord.Client, interaction: discord.Interaction, dm, panel_id: int, slot_id: int):
-    if not await dm.is_manager(interaction):
-        await _safe_ephemeral(interaction, "❌ 管理者/管理ロールのみ操作できます")
-        return
-
-    ok, msg = await dm.toggle_break_slot(panel_id=panel_id, slot_id=slot_id)
-    await _safe_ephemeral(interaction, ("✅ " if ok else "❌ ") + msg)
-
-    try:
-        await dm.render_panel(bot, panel_id)
-    except Exception:
-        print("render_panel error")
-        print(traceback.format_exc())
-
-
-# -----------------------------
-# Entry point
-# -----------------------------
-async def handle_interaction(bot: discord.Client, interaction: discord.Interaction):
-    try:
-        data = interaction.data or {}
-        custom_id = data.get("custom_id")
-        if not custom_id:
-            return
-
-        dm = getattr(bot, "dm", None)
-        if dm is None:
-            await _safe_ephemeral(interaction, "❌ DataManager未初期化")
-            return
-
-        # ✅ モーダル（タイトル）
-        if interaction.type == discord.InteractionType.modal_submit:
-            await handle_setup_wizard(bot, interaction, dm)
-            return
-
-        # ✅ setup wizard
-        if custom_id.startswith("setup:") or custom_id.startswith("setup"):
-            await handle_setup_wizard(bot, interaction, dm)
-            return
-
-        # ✅ パネル：枠ボタン
-        ps = _parse_panel_slot(custom_id)
-        if ps:
-            panel_id, slot_id = ps
-            await handle_panel_slot(bot, interaction, dm, panel_id, slot_id)
-            return
-
-        # ✅ 3分前通知 ON/OFF
-        panel_id = _parse_notifytoggle(custom_id)
-        if panel_id is not None:
-            await handle_notify_toggle(bot, interaction, dm, panel_id)
-            return
-
-        # ✅ 休憩切替
-        panel_id = _parse_breaktoggle(custom_id)
-        if panel_id is not None:
-            await handle_break_toggle(bot, interaction, dm, panel_id)
-            return
-
-        # ✅ 休憩 select
-        panel_id = _parse_breakselect(custom_id)
-        if panel_id is not None:
-            values = (data.get("values") or [])
-            if not values:
-                return
+        # -------- selects
+        elif custom_id == "setup:start_hour" and values:
+            st["start_hour"] = values[0]
+        elif custom_id == "setup:start_min" and values:
+            st["start_min"] = values[0]
+        elif custom_id == "setup:end_hour" and values:
+            st["end_hour"] = values[0]
+        elif custom_id == "setup:end_min" and values:
+            st["end_min"] = values[0]
+        elif custom_id == "setup:interval" and values:
             try:
-                slot_id = int(values[0])
+                st["interval"] = int(values[0])
             except Exception:
-                await _safe_ephemeral(interaction, "❌ 選択値が不正です")
-                return
-            await handle_break_select(bot, interaction, dm, panel_id, slot_id)
-            return
+                st["interval"] = None
+        elif custom_id == "setup:notify_channel" and values:
+            st["notify_channel_id"] = str(values[0])
+
+        # 最後に再描画
+        _recalc_hm(st)
+        embed = build_setup_embed(st)
+        view = build_setup_view(st)
+        await _edit_wizard_message(bot, st, embed=embed, view=view)
 
     except Exception:
-        print("handle_interaction error")
+        print("handle_setup_wizard error")
         print(traceback.format_exc())
-        await _safe_ephemeral(interaction, "❌ ボタン処理でエラー（ログ確認）")
+        await _safe_ephemeral(interaction, "❌ ウィザード処理でエラー（ログ確認）")
+
+
+async def handle_interaction(bot: discord.Client, interaction: discord.Interaction):
+    data = interaction.data or {}
+    custom_id = data.get("custom_id") or ""
+    if not custom_id.startswith("setup:"):
+        return
+
+    dm = getattr(bot, "dm", None)
+    if dm is None:
+        await _safe_ephemeral(interaction, "❌ DataManager未初期化")
+        return
+
+    await handle_setup_wizard(bot, interaction, dm)
