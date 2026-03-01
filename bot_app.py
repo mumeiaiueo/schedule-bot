@@ -1,4 +1,3 @@
-# bot_app.py
 import os
 import asyncio
 import traceback
@@ -11,7 +10,6 @@ from utils.data_manager import DataManager
 
 from commands.setup_channel import register as register_setup
 from commands.reset_channel import register as register_reset
-from commands.remind_channel import register as register_remind
 from commands.set_manager_role import register as register_manager_role
 
 from bot_interact import handle_interaction
@@ -31,10 +29,8 @@ class MyClient(discord.Client):
         self._synced = False
 
     async def setup_hook(self):
-        # ✅ コマンド登録（notify系は削除）
         register_setup(self.tree, self.dm)
         register_reset(self.tree, self.dm)
-        register_remind(self.tree, self.dm)
         register_manager_role(self.tree, self.dm)
 
     async def on_ready(self):
@@ -54,22 +50,17 @@ class MyClient(discord.Client):
 
     async def on_interaction(self, interaction: discord.Interaction):
         try:
-            # ボタン/セレクトは自前処理
             if interaction.type == discord.InteractionType.component:
+                # ✅ ここで必ずACK（bot_interact側はfollowup専用）
                 try:
                     if not interaction.response.is_done():
                         await interaction.response.defer()
                 except Exception:
                     pass
 
-                try:
-                    await handle_interaction(self, interaction)
-                except Exception:
-                    print("on_interaction(component) error")
-                    print(traceback.format_exc())
+                await handle_interaction(self, interaction)
                 return
 
-            # スラッシュコマンドはCommandTreeへ
             await self.tree._from_interaction(interaction)
 
         except Exception:
