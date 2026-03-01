@@ -1,7 +1,5 @@
-# bot_app.py
+# bot_app.py（完全コピペ版：モーダル対応・40060/既ACK事故を減らす）
 import traceback
-import asyncio
-
 import discord
 from discord.ext import tasks
 from discord import app_commands
@@ -27,61 +25,57 @@ class BotApp(discord.Client):
         # setup wizard state: {user_id: dict}
         self.setup_state = {}
 
+        self._synced = False
+
     async def setup_hook(self):
-        # ✅ register commands
+        # register commands
         register_setup_channel(self.tree, self.dm)
         register_reset_channel(self.tree, self.dm)
         register_set_manager_role(self.tree, self.dm)
 
-        # ✅ sync once on boot
-        await self.tree.sync()
+        # ✅ sync は起動直後に1回だけ
+        if not self._synced:
+            try:
+                await self.tree.sync()
+                self._synced = True
+                print("✅ commands synced")
+            except Exception:
+                print("⚠️ sync error")
+                print(traceback.format_exc())
 
-        # ✅ start reminder loop
+        # ✅ 3分前通知ループ開始（重複起動防止）
         if not self.reminder_loop.is_running():
             self.reminder_loop.start()
 
     async def on_ready(self):
-        print(f"✅ Logged in as {self.user} (guilds={len(self.guilds)})")
+        print(f"✅ Logged in as {self.user} (id={self.user.id})")
 
     async def on_interaction(self, interaction: discord.Interaction):
         """
-        ✅ 40060防止の安定処理
-        - component / modal はここで defer → bot_interact に流す
-        - slash は CommandTree に渡す（※ super().on_interaction は呼ばない）
+        ✅ ここがポイント：
+        - component(ボタン/セレクト) をここで先に defer しない
+          → deferすると「モーダルを開けない」「既ACK(40060)」の原因になる
+        - ACK/返信は bot_interact 側で custom_id を見て適切に行う
         """
         try:
-            # ボタン・セレクト
-            if interaction.type == discord.InteractionType.component:
-                try:
-                    if not interaction.response.is_done():
-                        await interaction.response.defer()  # followup/ephemeralを使う想定
-                except Exception:
-                    pass
-
+            if interaction.type in (
+                discord.InteractionType.component,
+                discord.InteractionType.modal_submit,
+            ):
                 await handle_interaction(self, interaction)
                 return
 
-            # モーダル送信（タイトル入力など）
-            if interaction.type == discord.InteractionType.modal_submit:
-                try:
-                    if not interaction.response.is_done():
-                        await interaction.response.defer(ephemeral=True)
-                except Exception:
-                    pass
-
-                await handle_interaction(self, interaction)
-                return
-
-            # スラッシュコマンド（アプリコマンド）
+            # スラッシュコマンドは通常処理へ
             if interaction.type == discord.InteractionType.application_command:
-                # discord.py のバージョン差で super().on_interaction は無いので使わない
-                await self.tree._call(interaction)
+                # discord.pyの内部処理に任せる（安定）
+                await super().on_interaction(interaction)
                 return
 
         except Exception:
             print("❌ on_interaction error")
             print(traceback.format_exc())
 
+    # ✅ 3分前通知ループ
     @tasks.loop(seconds=30)
     async def reminder_loop(self):
         try:
@@ -91,36 +85,4 @@ class BotApp(discord.Client):
             print(traceback.format_exc())
 
 
-async def run_bot(token: str):
-    """
-    ✅ main.py から呼ばれる唯一の起動口
-    - 429(Cloudflare/Too Many Requests) が来たら落とさず待って再試行
-    """
-    bot = BotApp()
-
-    backoff = 15  # 秒（429時に増やす）
-    while True:
-        try:
-            async with bot:
-                await bot.start(token, reconnect=True)
-            # 正常終了したらループを抜ける
-            return
-
-        except discord.HTTPException as e:
-            # 429 / Cloudflare系のブロックは「落とすと再起動→連打→悪化」なので待つ
-            if getattr(e, "status", None) == 429:
-                print("⚠️ Discord login rate-limited (429). Backing off...")
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 600)  # 最大10分
-                continue
-
-            print("❌ discord.HTTPException")
-            print(repr(e))
-            await asyncio.sleep(10)
-            continue
-
-        except Exception:
-            print("❌ run_bot fatal error")
-            print(traceback.format_exc())
-            await asyncio.sleep(10)
-            continue
+bot = BotApp()
