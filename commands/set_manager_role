@@ -1,0 +1,34 @@
+# commands/set_manager_role.py
+import discord
+from discord import app_commands
+
+
+def register(tree: app_commands.CommandTree, dm):
+    @tree.command(name="set_manager_role", description="管理ロールを設定（管理者のみ）")
+    @app_commands.describe(role="管理に使うロール（指定）", clear="trueで解除")
+    async def set_manager_role(
+        interaction: discord.Interaction,
+        role: discord.Role | None = None,
+        clear: bool = False,
+    ):
+        # 管理者限定
+        member = interaction.user
+        if not isinstance(member, discord.Member) or not member.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 管理者のみ実行できます", ephemeral=True)
+            return
+
+        try:
+            if clear:
+                await dm.set_manager_role_id(str(interaction.guild_id), None)
+                await interaction.response.send_message("✅ 管理ロールを解除しました", ephemeral=True)
+                return
+
+            if role is None:
+                await interaction.response.send_message("❌ ロールを指定してね（または clear=true）", ephemeral=True)
+                return
+
+            await dm.set_manager_role_id(str(interaction.guild_id), int(role.id))
+            await interaction.response.send_message(f"✅ 管理ロールを設定しました：{role.mention}", ephemeral=True)
+
+        except Exception:
+            await interaction.response.send_message("❌ 設定に失敗（ログ確認）", ephemeral=True)
