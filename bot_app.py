@@ -1,17 +1,15 @@
-# bot_app.py
 import traceback
 import discord
 from discord.ext import tasks
 from discord import app_commands
 
+from utils.db import init_supabase
 from utils.data_manager import DataManager
-from bot_interact import handle_component_or_modal
+from bot_interact import handle_component
 
-# commands（今のファイル名に合わせる）
 from commands.setup import register as register_setup
 from commands.reset import register as register_reset
 from commands.manager_role import register as register_manager_role
-
 
 class BotApp(discord.Client):
     def __init__(self):
@@ -21,9 +19,12 @@ class BotApp(discord.Client):
 
         self.tree = app_commands.CommandTree(self)
         self.dm = DataManager()
+        self.wizard_state = {}
 
     async def setup_hook(self):
-        register_setup(self.tree, self.dm)
+        init_supabase()
+
+        register_setup(self.tree, self.dm, self.wizard_state)
         register_reset(self.tree, self.dm)
         register_manager_role(self.tree, self.dm)
 
@@ -34,33 +35,13 @@ class BotApp(discord.Client):
         print(f"✅ Logged in as {self.user}")
 
     async def on_interaction(self, interaction: discord.Interaction):
-        """
-        重要:
-        - /setup などのスラッシュは **ここで defer しない**
-        - ボタン/セレクト/モーダルだけ defer して handler に渡す
-        """
         try:
+            # ボタン/セレクト
             if interaction.type == discord.InteractionType.component:
-                # ボタン/セレクト
-                try:
-                    if not interaction.response.is_done():
-                        await interaction.response.defer()
-                except Exception:
-                    pass
-                await handle_component_or_modal(self, interaction)
+                await handle_component(self, interaction)
                 return
 
-            if interaction.type == discord.InteractionType.modal_submit:
-                # モーダル送信
-                try:
-                    if not interaction.response.is_done():
-                        await interaction.response.defer(ephemeral=True)
-                except Exception:
-                    pass
-                await handle_component_or_modal(self, interaction)
-                return
-
-            # スラッシュコマンドは tree に任せる
+            # スラッシュは tree に任せる（ここで defer しない）
             if interaction.type == discord.InteractionType.application_command:
                 await self.tree._call(interaction)
                 return
@@ -76,7 +57,6 @@ class BotApp(discord.Client):
         except Exception:
             print("❌ reminder loop error")
             print(traceback.format_exc())
-
 
 async def run_bot(token: str):
     bot = BotApp()
