@@ -451,7 +451,7 @@ class DataManager:
             panel_cache[pid] = (p[0] if p else None)
             return panel_cache[pid]
 
-        # (panel_id, user_id) でまとめる
+        # (panel_id, user_id) まとめる
         groups: dict[tuple[int, str], list[dict]] = {}
         for s in candidates:
             key = (int(s["panel_id"]), str(s["reserver_user_id"]))
