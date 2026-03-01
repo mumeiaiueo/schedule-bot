@@ -1,15 +1,11 @@
 # bot_interact.py
 from __future__ import annotations
 
-import asyncio
-import re
 import traceback
 from datetime import datetime, timedelta
-
 import discord
 
 from utils.time_utils import jst_now
-from utils.db import sb
 from views.setup_wizard import build_setup_embed, build_setup_view
 
 
@@ -79,7 +75,13 @@ def _build_day_date(day_key: str):
     return now.date()
 
 
+# -----------------------------
+# Interaction safe helpers
+# -----------------------------
 async def _safe_ephemeral(interaction: discord.Interaction, text: str):
+    """
+    component は bot_app.py 側で defer() 済みの可能性が高いので followup 優先。
+    """
     try:
         if interaction.response.is_done():
             await interaction.followup.send(text, ephemeral=True)
@@ -103,55 +105,46 @@ async def _safe_edit_message(interaction: discord.Interaction, *, embed=None, vi
 
 
 # -----------------------------
-# DB helpers for panel buttons
+# custom_id parsers (PanelView対応)
 # -----------------------------
-async def _db(fn):
-    return await asyncio.to_thread(fn)
-
-
-async def _get_panel_id_by_slot_id(slot_id: int) -> int | None:
-    # slots.id -> panel_id を引く
-    def work():
-        rows = (
-            sb.table("slots")
-            .select("panel_id")
-            .eq("id", slot_id)
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        if not rows:
-            return None
-        return int(rows[0]["panel_id"])
-
+def _parse_panel_slot(custom_id: str) -> tuple[int, int] | None:
+    # panel:slot:{panel_id}:{slot_id}
+    if not custom_id.startswith("panel:slot:"):
+        return None
+    parts = custom_id.split(":")
+    # ["panel","slot",panel_id,slot_id]
+    if len(parts) < 4:
+        return None
     try:
-        return await _db(work)
+        panel_id = int(parts[2])
+        slot_id = int(parts[3])
+        return panel_id, slot_id
     except Exception:
         return None
 
 
-def _extract_slot_id(custom_id: str) -> int | None:
-    """
-    いろんな形式に対応:
-    - "slot:123"
-    - "reserve:123"
-    - "panel:slot:123"
-    - "123"（数字だけ）
-    - "slot_123" / "slot-123"
-    """
-    if not custom_id:
+def _parse_breaktoggle(custom_id: str) -> int | None:
+    # panel:breaktoggle:{panel_id}
+    if not custom_id.startswith("panel:breaktoggle:"):
         return None
-
-    # 数字だけ
-    if custom_id.isdigit():
-        return int(custom_id)
-
-    m = re.search(r"(\d{1,12})", custom_id)
-    if not m:
+    parts = custom_id.split(":")
+    if len(parts) < 3:
         return None
     try:
-        return int(m.group(1))
+        return int(parts[2])
+    except Exception:
+        return None
+
+
+def _parse_breakselect(custom_id: str) -> int | None:
+    # panel:breakselect:{panel_id}
+    if not custom_id.startswith("panel:breakselect:"):
+        return None
+    parts = custom_id.split(":")
+    if len(parts) < 3:
+        return None
+    try:
+        return int(parts[2])
     except Exception:
         return None
 
@@ -277,34 +270,53 @@ async def handle_setup_wizard(bot: discord.Client, interaction: discord.Interact
 
 
 # -----------------------------
-# Panel reserve handler
+# Panel Handlers
 # -----------------------------
-async def handle_panel_reserve(bot: discord.Client, interaction: discord.Interaction, dm, custom_id: str):
-    """
-    PanelViewのボタンを押したときに予約/キャンセルする
-    """
-    if sb is None:
-        await _safe_ephemeral(interaction, "❌ DB未接続（SUPABASE設定を確認）")
-        return
-
-    slot_id = _extract_slot_id(custom_id)
-    if not slot_id:
-        # 何もしない（別のViewのボタンかも）
-        return
-
-    # 予約トグル
+async def handle_panel_slot(bot: discord.Client, interaction: discord.Interaction, dm, panel_id: int, slot_id: int):
     ok, msg = await dm.toggle_reserve(
         slot_id=slot_id,
         user_id=str(interaction.user.id),
         user_name=getattr(interaction.user, "display_name", None) or interaction.user.name,
     )
-
     await _safe_ephemeral(interaction, ("✅ " if ok else "❌ ") + msg)
 
-    # パネル更新（slot_id→panel_id引いて再描画）
-    panel_id = await _get_panel_id_by_slot_id(slot_id)
-    if not panel_id:
+    # パネル再描画（これがボタン色/一覧更新）
+    try:
+        await dm.render_panel(bot, panel_id)
+    except Exception:
+        print("render_panel error")
+        print(traceback.format_exc())
+
+
+async def handle_break_toggle(bot: discord.Client, interaction: discord.Interaction, dm, panel_id: int):
+    # 権限チェック
+    if not await dm.is_manager(interaction):
+        await _safe_ephemeral(interaction, "❌ 管理者/管理ロールのみ操作できます")
         return
+
+    try:
+        view = await dm.build_break_select_view(panel_id)
+        await _safe_ephemeral(interaction, "🛠 休憩にする/解除する時間を選んでください",)
+        # followupでview付き送信（ephemeral）
+        try:
+            await interaction.followup.send("👇 ここから選択", view=view, ephemeral=True)
+        except Exception:
+            # defer済みでない等の保険
+            await interaction.response.send_message("👇 ここから選択", view=view, ephemeral=True)
+    except Exception:
+        print("breaktoggle error")
+        print(traceback.format_exc())
+        await _safe_ephemeral(interaction, "❌ 休憩選択の表示に失敗（ログ確認）")
+
+
+async def handle_break_select(bot: discord.Client, interaction: discord.Interaction, dm, panel_id: int, slot_id: int):
+    if not await dm.is_manager(interaction):
+        await _safe_ephemeral(interaction, "❌ 管理者/管理ロールのみ操作できます")
+        return
+
+    ok, msg = await dm.toggle_break_slot(panel_id=panel_id, slot_id=slot_id)
+    await _safe_ephemeral(interaction, ("✅ " if ok else "❌ ") + msg)
+
     try:
         await dm.render_panel(bot, panel_id)
     except Exception:
@@ -335,9 +347,34 @@ async def handle_interaction(bot: discord.Client, interaction: discord.Interacti
             await handle_setup_wizard(bot, interaction, dm)
             return
 
-        # ✅ 募集パネル（予約ボタン）: custom_idに数字が含まれていればslot_idとして扱う
-        # （あなたのPanelViewのcustom_id形式が不明でも、ほぼ救えるようにしてある）
-        await handle_panel_reserve(bot, interaction, dm, custom_id)
+        # ✅ パネル：枠ボタン
+        ps = _parse_panel_slot(custom_id)
+        if ps:
+            panel_id, slot_id = ps
+            await handle_panel_slot(bot, interaction, dm, panel_id, slot_id)
+            return
+
+        # ✅ 休憩切替ボタン
+        panel_id = _parse_breaktoggle(custom_id)
+        if panel_id is not None:
+            await handle_break_toggle(bot, interaction, dm, panel_id)
+            return
+
+        # ✅ 休憩select
+        panel_id = _parse_breakselect(custom_id)
+        if panel_id is not None:
+            values = (data.get("values") or [])
+            if not values:
+                return
+            try:
+                slot_id = int(values[0])
+            except Exception:
+                await _safe_ephemeral(interaction, "❌ 選択値が不正です")
+                return
+            await handle_break_select(bot, interaction, dm, panel_id, slot_id)
+            return
+
+        # それ以外は何もしない
         return
 
     except Exception:
