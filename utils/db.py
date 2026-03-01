@@ -1,4 +1,4 @@
-print("✅ LOADED db.py v2026-02-27 safe-no-proxy (FULL COPY)")
+print("✅ LOADED db.py v2026-03-02 safe-no-proxy (FULL COPY)")
 
 import os
 import socket
@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from supabase import create_client
 
 
-def _pick_first_env(*keys: str) -> tuple[str | None, str | None]:
+def _pick_first_env(*keys: str):
     for k in keys:
         v = os.getenv(k)
         if v and str(v).strip():
@@ -15,7 +15,7 @@ def _pick_first_env(*keys: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _host_from_url(url: str | None) -> str | None:
+def _host_from_url(url: str | None):
     if not url:
         return None
     try:
@@ -56,7 +56,6 @@ else:
         print("⚠️ Could not parse host from SUPABASE_URL")
 
     try:
-        # proxy 引数は絶対渡さない（環境差で死ぬ）
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)
         print("✅ Supabase client created")
     except Exception as e:
