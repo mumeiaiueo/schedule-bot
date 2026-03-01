@@ -1,59 +1,86 @@
 import discord
+from utils.time_utils import make_time_options
+
+def _btn(label, custom_id, style, row):
+    return discord.ui.Button(label=label, custom_id=custom_id, style=style, row=row)
+
+def _time_select(custom_id: str, placeholder: str, row: int):
+    options = [discord.SelectOption(label=t, value=t) for t in make_time_options(5)]
+    return discord.ui.Select(
+        custom_id=custom_id,
+        placeholder=placeholder,
+        min_values=1,
+        max_values=1,
+        options=options,
+        row=row
+    )
+
+def _interval_select(custom_id: str, placeholder: str, row: int):
+    options = [
+        discord.SelectOption(label="20分", value="20"),
+        discord.SelectOption(label="25分", value="25"),
+        discord.SelectOption(label="30分", value="30"),
+    ]
+    return discord.ui.Select(
+        custom_id=custom_id,
+        placeholder=placeholder,
+        min_values=1,
+        max_values=1,
+        options=options,
+        row=row
+    )
+
+class TitleModal(discord.ui.Modal, title="募集タイトル入力"):
+    title_input = discord.ui.TextInput(
+        label="タイトル",
+        placeholder="例：配信枠 / 作業枠 / なんでも",
+        required=False,
+        max_length=80
+    )
+
+    def __init__(self, st: dict):
+        super().__init__(timeout=300)
+        self.st = st
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.st["title"] = (self.title_input.value or "").strip()
+        await interaction.response.send_message("✅ タイトルを保存しました", ephemeral=True)
+
 class SetupWizardView(discord.ui.View):
     def __init__(self, st: dict):
         super().__init__(timeout=600)
-        step = int(st.get("step") or 1)
-        day = st.get("day") or "today"
-
-        # ===== Row 0：日付 =====
-        self.add_item(_btn("今日", "setup:day:today",
-                           discord.ButtonStyle.primary if day == "today"
-                           else discord.ButtonStyle.secondary,
-                           row=0))
-
-        self.add_item(_btn("明日", "setup:day:tomorrow",
-                           discord.ButtonStyle.primary if day == "tomorrow"
-                           else discord.ButtonStyle.secondary,
-                           row=0))
+        step = int(st.get("step", 1))
+        day = st.get("day", "today")
 
         if step == 1:
-            # ===== Row 1〜4：時刻選択 =====
-            self.add_item(_sel("setup:start_hour",
-                               f"開始(時) 現在:{_val_or_dash(st.get('start_hour'))}",
-                               _hour_options(),
-                               row=1))
+            # Row0: day buttons
+            self.add_item(_btn("今日", "setup:day:today",
+                               discord.ButtonStyle.primary if day == "today" else discord.ButtonStyle.secondary, row=0))
+            self.add_item(_btn("明日", "setup:day:tomorrow",
+                               discord.ButtonStyle.primary if day == "tomorrow" else discord.ButtonStyle.secondary, row=0))
 
-            self.add_item(_sel("setup:start_min",
-                               f"開始(分) 現在:{_val_or_dash(st.get('start_min'))}",
-                               _min_options(),
-                               row=2))
+            # Row1: start time select
+            self.add_item(_time_select("setup:start", "開始時刻（例 19:00）", row=1))
+            # Row2: end time select
+            self.add_item(_time_select("setup:end", "終了時刻（例 21:00）", row=2))
 
-            self.add_item(_sel("setup:end_hour",
-                               f"終了(時) 現在:{_val_or_dash(st.get('end_hour'))}",
-                               _hour_options(),
-                               row=3))
-
-            self.add_item(_sel("setup:end_min",
-                               f"終了(分) 現在:{_val_or_dash(st.get('end_min'))}",
-                               _min_options(),
-                               row=4))
-
-            # 次へは row=0 に置かず row=4 に変更
-            self.add_item(_btn("次へ",
-                               "setup:step:next",
-                               discord.ButtonStyle.success,
-                               row=4))
+            # Row3: next
+            self.add_item(_btn("次へ", "setup:step:2", discord.ButtonStyle.success, row=3))
 
         else:
-            # ===== Step2 =====
+            # Row0: interval select
+            self.add_item(_interval_select("setup:interval", "間隔（20/25/30）", row=0))
 
-            # Row1: 間隔
-            self.add_item(_sel("setup:interval",
-                               f"間隔（分） 現在:{_val_or_dash(st.get('interval'))}",
-                               _interval_options(),
+            # Row1: title + everyone
+            self.add_item(_btn("📝 タイトル入力", "setup:title:open", discord.ButtonStyle.secondary, row=1))
+
+            everyone = bool(st.get("everyone", False))
+            self.add_item(_btn("@everyone ON" if everyone else "@everyone OFF",
+                               "setup:everyone:toggle",
+                               discord.ButtonStyle.danger if everyone else discord.ButtonStyle.secondary,
                                row=1))
 
-            # Row2: 通知チャンネル
+            # Row2: notify channel select（このrowはselect専用）
             cs = discord.ui.ChannelSelect(
                 custom_id="setup:notify_channel",
                 placeholder="通知チャンネル（未選択=このチャンネル）",
@@ -62,29 +89,37 @@ class SetupWizardView(discord.ui.View):
                 channel_types=[discord.ChannelType.text],
                 row=2,
             )
-            cs.callback = _noop
             self.add_item(cs)
 
-            # Row3: タイトル
-            self.add_item(_btn("📝 タイトル入力",
-                               "setup:title:open",
-                               discord.ButtonStyle.secondary,
-                               row=3))
+            # Row3: back + create
+            self.add_item(_btn("戻る", "setup:step:1", discord.ButtonStyle.secondary, row=3))
+            self.add_item(_btn("作成", "setup:create", discord.ButtonStyle.success, row=3))
 
-            # Row3: @everyone
-            everyone = bool(st.get("everyone"))
-            self.add_item(_btn("@everyone ON" if everyone else "@everyone OFF",
-                               "setup:everyone:toggle",
-                               discord.ButtonStyle.danger if everyone else discord.ButtonStyle.secondary,
-                               row=3))
+def build_setup_view(st: dict) -> discord.ui.View:
+    return SetupWizardView(st)
 
-            # Row4: 戻る & 作成
-            self.add_item(_btn("戻る",
-                               "setup:step:back",
-                               discord.ButtonStyle.secondary,
-                               row=4))
+def build_setup_embed(st: dict) -> discord.Embed:
+    step = int(st.get("step", 1))
+    day = st.get("day", "today")
+    start = st.get("start")
+    end = st.get("end")
+    interval = st.get("interval")
+    title = st.get("title", "")
+    everyone = bool(st.get("everyone", False))
+    notify = st.get("notify_channel")
 
-            self.add_item(_btn("作成",
-                               "setup:create",
-                               discord.ButtonStyle.success,
-                               row=4))
+    e = discord.Embed(title="募集パネル作成ウィザード", color=0x5865F2)
+    e.add_field(name="Step", value=str(step), inline=True)
+    e.add_field(name="日付", value=("今日" if day == "today" else "明日"), inline=True)
+
+    e.add_field(name="開始", value=(start or "未選択"), inline=True)
+    e.add_field(name="終了", value=(end or "未選択"), inline=True)
+
+    if step == 2:
+        e.add_field(name="間隔", value=(f"{interval}分" if interval else "未選択"), inline=True)
+        e.add_field(name="タイトル", value=(title if title else "（なし）"), inline=False)
+        e.add_field(name="@everyone", value=("ON" if everyone else "OFF"), inline=True)
+        e.add_field(name="通知チャンネル", value=(f"<#{notify}>" if notify else "このチャンネル"), inline=False)
+
+    e.set_footer(text="ボタン/セレクトで設定して「作成」")
+    return e
