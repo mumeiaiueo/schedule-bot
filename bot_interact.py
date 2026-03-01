@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import traceback
 from datetime import datetime, timedelta
+
 import discord
 
 from utils.time_utils import jst_now
@@ -149,6 +150,19 @@ def _parse_breakselect(custom_id: str) -> int | None:
         return None
 
 
+def _parse_notifytoggle(custom_id: str) -> int | None:
+    # panel:notifytoggle:{panel_id}
+    if not custom_id.startswith("panel:notifytoggle:"):
+        return None
+    parts = custom_id.split(":")
+    if len(parts) < 3:
+        return None
+    try:
+        return int(parts[2])
+    except Exception:
+        return None
+
+
 # -----------------------------
 # Setup Wizard Handler
 # -----------------------------
@@ -280,7 +294,22 @@ async def handle_panel_slot(bot: discord.Client, interaction: discord.Interactio
     )
     await _safe_ephemeral(interaction, ("✅ " if ok else "❌ ") + msg)
 
-    # パネル再描画（これがボタン色/一覧更新）
+    try:
+        await dm.render_panel(bot, panel_id)
+    except Exception:
+        print("render_panel error")
+        print(traceback.format_exc())
+
+
+async def handle_notify_toggle(bot: discord.Client, interaction: discord.Interaction, dm, panel_id: int):
+    # 管理者/管理ロールのみ
+    if not await dm.is_manager(interaction):
+        await _safe_ephemeral(interaction, "❌ 管理者/管理ロールのみ操作できます")
+        return
+
+    ok, msg = await dm.toggle_notify_paused(panel_id)
+    await _safe_ephemeral(interaction, ("✅ " if ok else "❌ ") + msg)
+
     try:
         await dm.render_panel(bot, panel_id)
     except Exception:
@@ -289,20 +318,16 @@ async def handle_panel_slot(bot: discord.Client, interaction: discord.Interactio
 
 
 async def handle_break_toggle(bot: discord.Client, interaction: discord.Interaction, dm, panel_id: int):
-    # 権限チェック
     if not await dm.is_manager(interaction):
         await _safe_ephemeral(interaction, "❌ 管理者/管理ロールのみ操作できます")
         return
 
     try:
         view = await dm.build_break_select_view(panel_id)
-        await _safe_ephemeral(interaction, "🛠 休憩にする/解除する時間を選んでください",)
-        # followupでview付き送信（ephemeral）
         try:
-            await interaction.followup.send("👇 ここから選択", view=view, ephemeral=True)
+            await interaction.followup.send("🛠 休憩にする/解除する時間を選んでください", view=view, ephemeral=True)
         except Exception:
-            # defer済みでない等の保険
-            await interaction.response.send_message("👇 ここから選択", view=view, ephemeral=True)
+            await interaction.response.send_message("🛠 休憩にする/解除する時間を選んでください", view=view, ephemeral=True)
     except Exception:
         print("breaktoggle error")
         print(traceback.format_exc())
@@ -354,13 +379,19 @@ async def handle_interaction(bot: discord.Client, interaction: discord.Interacti
             await handle_panel_slot(bot, interaction, dm, panel_id, slot_id)
             return
 
-        # ✅ 休憩切替ボタン
+        # ✅ 通知 ON/OFF
+        panel_id = _parse_notifytoggle(custom_id)
+        if panel_id is not None:
+            await handle_notify_toggle(bot, interaction, dm, panel_id)
+            return
+
+        # ✅ 休憩切替
         panel_id = _parse_breaktoggle(custom_id)
         if panel_id is not None:
             await handle_break_toggle(bot, interaction, dm, panel_id)
             return
 
-        # ✅ 休憩select
+        # ✅ 休憩 select
         panel_id = _parse_breakselect(custom_id)
         if panel_id is not None:
             values = (data.get("values") or [])
@@ -374,7 +405,6 @@ async def handle_interaction(bot: discord.Client, interaction: discord.Interacti
             await handle_break_select(bot, interaction, dm, panel_id, slot_id)
             return
 
-        # それ以外は何もしない
         return
 
     except Exception:
