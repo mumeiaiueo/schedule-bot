@@ -1,7 +1,6 @@
 import os
 import asyncio
 from dotenv import load_dotenv
-
 from bot_app import run_bot
 
 load_dotenv()
