@@ -1,3 +1,4 @@
+import discord
 class SetupWizardView(discord.ui.View):
     def __init__(self, st: dict):
         super().__init__(timeout=600)
