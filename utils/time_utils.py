@@ -17,8 +17,9 @@ def minutes_to_hm(x: int) -> str:
     m = x % 60
     return f"{h:02d}:{m:02d}"
 
-def make_time_options(step_min=5):
-    opts = []
-    for t in range(0, 24 * 60, step_min):
-        opts.append(minutes_to_hm(t))
-    return opts
+# ✅ 追加（Select用：25件以内にするため）
+def hour_options():
+    return [f"{h:02d}" for h in range(24)]  # 24件
+
+def minute_options(step=5):
+    return [f"{m:02d}" for m in range(0, 60, step)]  # 最大12件
