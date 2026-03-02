@@ -5,8 +5,9 @@ from discord.ext import tasks
 from discord import app_commands
 
 from utils.data_manager import DataManager
-from bot_interact import handle_component_or_modal
+from bot_interact import handle_component  # ← ここ重要（あなたの関数名に合わせる）
 
+# commands
 from commands.setup import register as register_setup
 from commands.reset import register as register_reset
 from commands.manager_role import register as register_manager_role
@@ -21,11 +22,10 @@ class BotApp(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.dm = DataManager()
 
-        # ★ 追加：ウィザード状態を保持
-        self.wizard_state: dict[int, dict] = {}
+        # ✅ ウィザード状態を持つ
+        self.wizard_state = {}
 
     async def setup_hook(self):
-        # ★ ここが超重要：wizard_state を渡す
         register_setup(self.tree, self.dm, self.wizard_state)
         register_reset(self.tree, self.dm)
         register_manager_role(self.tree, self.dm)
@@ -37,23 +37,21 @@ class BotApp(discord.Client):
         print(f"✅ Logged in as {self.user}")
 
     async def on_interaction(self, interaction: discord.Interaction):
+        """
+        ✅ ここでは defer しない（40060防止）
+        ボタン/セレクト/モーダルは bot_interact 側で処理
+        """
         try:
-            # ボタン/セレクト
-            if interaction.type == discord.InteractionType.component:
-                if not interaction.response.is_done():
-                    await interaction.response.defer()
-                await handle_component_or_modal(self, interaction)
+            if interaction.type in (
+                discord.InteractionType.component,
+                discord.InteractionType.modal_submit,
+            ):
+                await handle_component(self, interaction)
                 return
 
-            # モーダル
-            if interaction.type == discord.InteractionType.modal_submit:
-                if not interaction.response.is_done():
-                    await interaction.response.defer(ephemeral=True)
-                await handle_component_or_modal(self, interaction)
+            if interaction.type == discord.InteractionType.application_command:
+                await self.tree._call(interaction)
                 return
-
-            # ★ スラッシュコマンドは discord.py に任せる（ここで _call しない）
-            await super().on_interaction(interaction)
 
         except Exception:
             print("❌ on_interaction error")
