@@ -1,13 +1,11 @@
-# bot_app.py
 import traceback
 import discord
 from discord.ext import tasks
 from discord import app_commands
 
 from utils.data_manager import DataManager
-from bot_interact import handle_component  # ← ここ重要（あなたの関数名に合わせる）
+from bot_interact import handle_component  # あなたの関数名
 
-# commands
 from commands.setup import register as register_setup
 from commands.reset import register as register_reset
 from commands.manager_role import register as register_manager_role
@@ -21,8 +19,6 @@ class BotApp(discord.Client):
 
         self.tree = app_commands.CommandTree(self)
         self.dm = DataManager()
-
-        # ✅ ウィザード状態を持つ
         self.wizard_state = {}
 
     async def setup_hook(self):
@@ -36,28 +32,7 @@ class BotApp(discord.Client):
     async def on_ready(self):
         print(f"✅ Logged in as {self.user}")
 
-    # bot_app.py の on_interaction だけ置き換え
-
-async def on_interaction(self, interaction: discord.Interaction):
-    try:
-        # ボタン/セレクト
-        if interaction.type == discord.InteractionType.component:
-            await handle_component(self, interaction)
-            return
-
-        # モーダル送信
-        if interaction.type == discord.InteractionType.modal_submit:
-            await handle_component(self, interaction)
-            return
-
-        # スラッシュ
-        if interaction.type == discord.InteractionType.application_command:
-            await self.tree._call(interaction)
-            return
-
-    except Exception:
-        print("❌ on_interaction error")
-        print(traceback.format_exc())
+    async def on_interaction(self, interaction: discord.Interaction):
         """
         ✅ ここでは defer しない（40060防止）
         ボタン/セレクト/モーダルは bot_interact 側で処理
