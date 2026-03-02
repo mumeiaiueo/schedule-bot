@@ -113,20 +113,31 @@ async def handle_component(bot, interaction: discord.Interaction):
         embed = build_setup_embed(st)
         view = build_setup_view(st)
 
-        if not interaction.response.is_done():
-            await interaction.response.edit_message(embed=embed, view=view)
-        else:
-            await interaction.message.edit(embed=embed, view=view)
-
-    except Exception:
-        print("❌ handle_component error")
-        print(traceback.format_exc())
-
+        # ✅ Interactionに必ず紐づく方法で編集する（反応なし/例外潰し）
         try:
+            # まだACKしてない → これが一番強い（これ自体がACKになる）
             if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "内部エラー。ログ見てね",
-                    ephemeral=True
+                await interaction.response.edit_message(embed=embed, view=view)
+                return
+        except Exception:
+            pass
+
+        # ここに来た＝すでにACK済み or response.edit_message失敗
+        # message が取れるなら followup.edit_message を試す
+        try:
+            if interaction.message is not None:
+                await interaction.followup.edit_message(
+                    message_id=interaction.message.id,
+                    embed=embed,
+                    view=view
                 )
-        except:
+                return
+        except Exception:
+            pass
+
+        # 最後の保険：message があるなら通常 edit（ACKにはならないが表示更新だけはできる）
+        try:
+            if interaction.message is not None:
+                await interaction.message.edit(embed=embed, view=view)
+        except Exception:
             pass
