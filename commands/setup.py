@@ -8,16 +8,20 @@ def register(tree: app_commands.CommandTree, dm, wizard_state: dict):
         st = {
             "step": 1,
             "day": "today",
-            "start_hour": None,
-            "start_min": None,
-            "end_hour": None,
-            "end_min": None,
-            "start": None,   # "HH:MM" に組み立てる
-            "end": None,     # "HH:MM"
+
+            "start_hh": None,
+            "start_mm": None,
+            "end_hh": None,
+            "end_mm": None,
+
+            "start": None,
+            "end": None,
+
             "interval": None,
             "title": "",
             "everyone": False,
             "notify_channel": None,
+
             "author_id": interaction.user.id,
         }
         wizard_state[interaction.user.id] = st
@@ -25,5 +29,5 @@ def register(tree: app_commands.CommandTree, dm, wizard_state: dict):
         await interaction.response.send_message(
             embed=build_setup_embed(st),
             view=build_setup_view(st),
-            ephemeral=True,
+            ephemeral=True
         )
