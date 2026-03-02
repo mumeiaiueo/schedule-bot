@@ -5,8 +5,9 @@ from discord.ext import tasks
 from discord import app_commands
 
 from utils.data_manager import DataManager
-from bot_interact import handle_component  # ← bot_interact.py にこの関数がある前提
+from bot_interact import handle_component
 
+# commands
 from commands.setup import register as register_setup
 from commands.reset import register as register_reset
 from commands.manager_role import register as register_manager_role
@@ -20,9 +21,7 @@ class BotApp(discord.Client):
 
         self.tree = app_commands.CommandTree(self)
         self.dm = DataManager()
-
-        # ウィザード状態（ユーザーごと）
-        self.wizard_state: dict[int, dict] = {}
+        self.wizard_state = {}
 
     async def setup_hook(self):
         register_setup(self.tree, self.dm, self.wizard_state)
@@ -36,11 +35,8 @@ class BotApp(discord.Client):
         print(f"✅ Logged in as {self.user}")
 
     async def on_interaction(self, interaction: discord.Interaction):
-        """
-        ✅ ここでは defer しない（40060防止）
-        component/modal は bot_interact 側で返答まで完結させる
-        """
         try:
+            # ボタン/セレクト/モーダル
             if interaction.type in (
                 discord.InteractionType.component,
                 discord.InteractionType.modal_submit,
@@ -48,6 +44,7 @@ class BotApp(discord.Client):
                 await handle_component(self, interaction)
                 return
 
+            # スラッシュ
             if interaction.type == discord.InteractionType.application_command:
                 await self.tree._call(interaction)
                 return
@@ -55,6 +52,8 @@ class BotApp(discord.Client):
         except Exception:
             print("❌ on_interaction error")
             print(traceback.format_exc())
+            # ここで二重応答しない（40060防止）
+            return
 
     @tasks.loop(seconds=30)
     async def reminder_loop(self):
