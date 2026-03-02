@@ -1,40 +1,42 @@
+# bot_interact.py
 import traceback
 import discord
 from views.setup_wizard import build_setup_view, build_setup_embed, TitleModal
 from utils.time_utils import hm_to_minutes
 
-def _rebuild_hm(st: dict, which: str):
-    # which: "start" or "end"
-    if which == "start":
-        h = st.get("start_hour")
-        m = st.get("start_min")
-        if h is not None and m is not None:
-            st["start"] = f"{int(h):02d}:{int(m):02d}"
-    else:
-        h = st.get("end_hour")
-        m = st.get("end_min")
-        if h is not None and m is not None:
-            st["end"] = f"{int(h):02d}:{int(m):02d}"
+
+def _rebuild_time(st: dict):
+    """start_hour/start_min → start を作る"""
+    sh = st.get("start_hour")
+    sm = st.get("start_min")
+    eh = st.get("end_hour")
+    em = st.get("end_min")
+
+    if sh is not None and sm is not None:
+        st["start"] = f"{int(sh):02d}:{int(sm):02d}"
+
+    if eh is not None and em is not None:
+        st["end"] = f"{int(eh):02d}:{int(em):02d}"
+
 
 async def handle_component(bot, interaction: discord.Interaction):
     try:
         st = bot.wizard_state.get(interaction.user.id)
+
         if not st:
             if not interaction.response.is_done():
-                await interaction.response.send_message("状態がありません。/setup をやり直してね", ephemeral=True)
+                await interaction.response.send_message(
+                    "状態がありません。/setup をやり直してね",
+                    ephemeral=True
+                )
             return
 
         data = interaction.data or {}
         cid = data.get("custom_id") or ""
+        values = data.get("values", [])
 
-        # --- Modal submit（タイトル入力） ---
-        if interaction.type == discord.InteractionType.modal_submit:
-            # TitleModal.on_submit が st["title"] を更新する想定
-            # ここでは画面更新だけ
-            await interaction.response.send_message("✅ 反映しました", ephemeral=True)
-            return
+        # ===== ボタン処理 =====
 
-        # --- Buttons ---
         if cid.startswith("setup:day:"):
             st["day"] = cid.split(":")[-1]
 
@@ -48,28 +50,27 @@ async def handle_component(bot, interaction: discord.Interaction):
             st["everyone"] = not bool(st.get("everyone", False))
 
         elif cid == "setup:title:open":
-            # ✅ モーダルは defer してると出せないので、ここは即 send_modal
             await interaction.response.send_modal(TitleModal(st))
             return
 
         elif cid == "setup:create":
-            # ✅ ここだけ defer → followup（重い処理）
+            # 重い処理なので defer
             await interaction.response.defer(ephemeral=True)
 
-            # バリデーション
             if not st.get("start") or not st.get("end"):
                 await interaction.followup.send("開始/終了を選んでね", ephemeral=True)
                 return
+
             if not st.get("interval"):
                 await interaction.followup.send("間隔を選んでね", ephemeral=True)
                 return
+
             if hm_to_minutes(st["start"]) >= hm_to_minutes(st["end"]):
                 await interaction.followup.send("終了は開始より後にしてね", ephemeral=True)
                 return
 
             notify_ch = st.get("notify_channel") or interaction.channel_id
 
-            # DB保存
             await bot.dm.create_panel_record(
                 guild_id=int(interaction.guild_id),
                 channel_id=int(interaction.channel_id),
@@ -84,44 +85,62 @@ async def handle_component(bot, interaction: discord.Interaction):
                 }
             )
 
-            await interaction.followup.send("✅ 作成できた！DBに保存したよ", ephemeral=True)
+            await interaction.followup.send("✅ 作成しました", ephemeral=True)
 
-            # defer済みなので response.edit_message は使わず、元メッセージを直接編集
-            await interaction.message.edit(embed=build_setup_embed(st), view=build_setup_view(st))
+            # メッセージ更新
+            await interaction.message.edit(
+                embed=build_setup_embed(st),
+                view=build_setup_view(st)
+            )
             return
 
-        # --- Selects ---
-        values = data.get("values", [])
-        if values:
-            v = values[0]
-            if cid == "setup:start_hour":
-                st["start_hour"] = v
-                _rebuild_hm(st, "start")
-            elif cid == "setup:start_min":
-                st["start_min"] = v
-                _rebuild_hm(st, "start")
-            elif cid == "setup:end_hour":
-                st["end_hour"] = v
-                _rebuild_hm(st, "end")
-            elif cid == "setup:end_min":
-                st["end_min"] = v
-                _rebuild_hm(st, "end")
-            elif cid == "setup:interval":
-                st["interval"] = v
-            elif cid == "setup:notify_channel":
-                st["notify_channel"] = int(v)
+        # ===== セレクト処理 =====
 
-        # --- 画面更新（通常はこれだけ） ---
-        await interaction.response.edit_message(
-            embed=build_setup_embed(st),
-            view=build_setup_view(st),
-        )
+        if values:
+            value = values[0]
+
+            if cid == "setup:start_hour":
+                st["start_hour"] = value
+
+            elif cid == "setup:start_min":
+                st["start_min"] = value
+
+            elif cid == "setup:end_hour":
+                st["end_hour"] = value
+
+            elif cid == "setup:end_min":
+                st["end_min"] = value
+
+            elif cid == "setup:interval":
+                st["interval"] = value
+
+            elif cid == "setup:notify_channel":
+                st["notify_channel"] = int(value)
+
+            # 時刻組み立て
+            _rebuild_time(st)
+
+        # ===== 通常更新 =====
+
+        if not interaction.response.is_done():
+            await interaction.response.edit_message(
+                embed=build_setup_embed(st),
+                view=build_setup_view(st)
+            )
+        else:
+            await interaction.message.edit(
+                embed=build_setup_embed(st),
+                view=build_setup_view(st)
+            )
 
     except Exception:
         print("❌ handle_component error")
         print(traceback.format_exc())
         try:
             if not interaction.response.is_done():
-                await interaction.response.send_message("内部エラー。ログ見てね", ephemeral=True)
+                await interaction.response.send_message(
+                    "内部エラー。ログ見てね",
+                    ephemeral=True
+                )
         except Exception:
             pass
