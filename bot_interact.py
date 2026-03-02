@@ -68,17 +68,32 @@ async def handle_component(bot, interaction: discord.Interaction):
             await interaction.followup.send("✅ 作成（DB保存）しました。次はパネル表示を追加していくよ", ephemeral=True)
             return
 
-        # ===== selects =====
-        values = data.get("values", [])
+# ===== selects =====
+values = data.get("values", [])
 
-        if cid == "setup:start" and values:
-            st["start"] = values[0]
-        elif cid == "setup:end" and values:
-            st["end"] = values[0]
-        elif cid == "setup:interval" and values:
-            st["interval"] = values[0]
-        elif cid == "setup:notify_channel" and values:
-            st["notify_channel"] = int(values[0])
+# 時刻（時/分）
+if cid == "setup:start_hour" and values:
+    st["start_hour"] = values[0]
+elif cid == "setup:start_min" and values:
+    st["start_min"] = values[0]
+elif cid == "setup:end_hour" and values:
+    st["end_hour"] = values[0]
+elif cid == "setup:end_min" and values:
+    st["end_min"] = values[0]
+
+# hour/min が揃ったら "HH:MM" を組み立て
+if st.get("start_hour") is not None and st.get("start_min") is not None:
+    st["start"] = f"{st['start_hour']}:{st['start_min']}"
+if st.get("end_hour") is not None and st.get("end_min") is not None:
+    st["end"] = f"{st['end_hour']}:{st['end_min']}"
+
+# 間隔
+if cid == "setup:interval" and values:
+    st["interval"] = values[0]
+
+# 通知チャンネル
+elif cid == "setup:notify_channel" and values:
+    st["notify_channel"] = int(values[0])
 
         # ===== 画面更新 =====
         embed = build_setup_embed(st)
