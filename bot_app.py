@@ -1,10 +1,11 @@
+# bot_app.py
 import traceback
 import discord
 from discord.ext import tasks
 from discord import app_commands
 
 from utils.data_manager import DataManager
-from bot_interact import handle_component  # あなたの関数名
+from bot_interact import handle_component  # ← bot_interact.py にこの関数がある前提
 
 from commands.setup import register as register_setup
 from commands.reset import register as register_reset
@@ -19,7 +20,9 @@ class BotApp(discord.Client):
 
         self.tree = app_commands.CommandTree(self)
         self.dm = DataManager()
-        self.wizard_state = {}
+
+        # ウィザード状態（ユーザーごと）
+        self.wizard_state: dict[int, dict] = {}
 
     async def setup_hook(self):
         register_setup(self.tree, self.dm, self.wizard_state)
@@ -35,7 +38,7 @@ class BotApp(discord.Client):
     async def on_interaction(self, interaction: discord.Interaction):
         """
         ✅ ここでは defer しない（40060防止）
-        ボタン/セレクト/モーダルは bot_interact 側で処理
+        component/modal は bot_interact 側で返答まで完結させる
         """
         try:
             if interaction.type in (
