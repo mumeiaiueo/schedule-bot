@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta
-from utils.db import sb
+from utils import db
 from utils.time_utils import JST, jst_now, ymd_jst, hm_to_minutes
 
 class DataManager:
