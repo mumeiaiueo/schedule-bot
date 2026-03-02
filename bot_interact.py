@@ -7,10 +7,12 @@ async def handle_component(bot, interaction: discord.Interaction):
     try:
         st = bot.wizard_state.get(interaction.user.id)
         if not st:
-            await interaction.response.send_message("状態がありません。/setup をやり直してね", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("状態がありません。/setup をやり直してね", ephemeral=True)
             return
 
-        cid = getattr(interaction.data, "get", lambda _k, _d=None: None)("custom_id")
+        data = interaction.data or {}
+        cid = data.get("custom_id") or ""
 
         # ===== buttons =====
         if cid.startswith("setup:day:"):
@@ -26,28 +28,30 @@ async def handle_component(bot, interaction: discord.Interaction):
             st["everyone"] = not bool(st.get("everyone", False))
 
         elif cid == "setup:title:open":
-            await interaction.response.send_modal(TitleModal(st))
+            # ✅ モーダルは defer してると出せないので、ここはそのまま送る
+            if not interaction.response.is_done():
+                await interaction.response.send_modal(TitleModal(st))
             return
 
         elif cid == "setup:create":
+            # ✅ ここは重い処理なので defer（1回だけ）
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+
             # バリデーション
             if not st.get("start") or not st.get("end"):
-                await interaction.response.send_message("開始/終了を選んでね", ephemeral=True)
+                await interaction.followup.send("開始/終了を選んでね", ephemeral=True)
                 return
             if not st.get("interval"):
-                await interaction.response.send_message("間隔を選んでね", ephemeral=True)
+                await interaction.followup.send("間隔を選んでね", ephemeral=True)
                 return
 
-            # 時刻の整合（start < end）
             if hm_to_minutes(st["start"]) >= hm_to_minutes(st["end"]):
-                await interaction.response.send_message("終了は開始より後にしてね", ephemeral=True)
+                await interaction.followup.send("終了は開始より後にしてね", ephemeral=True)
                 return
 
-            # 通知チャンネル（未選択ならこのチャンネル）
             notify_ch = st.get("notify_channel") or interaction.channel_id
 
-            # DB保存（最小）
-            await interaction.response.defer(ephemeral=True)
             await bot.dm.create_panel_record(
                 guild_id=interaction.guild_id,
                 channel_id=interaction.channel_id,
@@ -65,32 +69,26 @@ async def handle_component(bot, interaction: discord.Interaction):
             return
 
         # ===== selects =====
-        if interaction.type == discord.InteractionType.component:
-            # discord.py は values を interaction.data["values"] に持ってる
-            values = interaction.data.get("values", [])
+        values = data.get("values", [])
 
-            if cid == "setup:start":
-                st["start"] = values[0]
-            elif cid == "setup:end":
-                st["end"] = values[0]
-            elif cid == "setup:interval":
-                st["interval"] = values[0]
-            elif cid == "setup:notify_channel":
-                # channel select: value は channel id(str)
-                st["notify_channel"] = int(values[0])
+        if cid == "setup:start" and values:
+            st["start"] = values[0]
+        elif cid == "setup:end" and values:
+            st["end"] = values[0]
+        elif cid == "setup:interval" and values:
+            st["interval"] = values[0]
+        elif cid == "setup:notify_channel" and values:
+            st["notify_channel"] = int(values[0])
 
-        # 画面更新（元メッセージ編集）
-        # ※ ここで response.defer 済み/未済み でも edit は followup で安全に行く
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-        except Exception:
-            pass
+        # ===== 画面更新 =====
+        embed = build_setup_embed(st)
+        view = build_setup_view(st)
 
-        await interaction.message.edit(
-            embed=build_setup_embed(st),
-            view=build_setup_view(st)
-        )
+        # ✅ response未使用なら edit_message が正解（これで「反応なし」減る）
+        if not interaction.response.is_done():
+            await interaction.response.edit_message(embed=embed, view=view)
+        else:
+            await interaction.message.edit(embed=embed, view=view)
 
     except Exception:
         print("❌ handle_component error")
