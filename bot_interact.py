@@ -60,20 +60,48 @@ async def handle_component(bot, interaction: discord.Interaction):
         st["end"] = _hhmm(st, "end")
 
         # ===== create =====
-        if cid == "setup:create":
-            # ここはDB保存するので defer（この時点で response は消費済み）
+                if cid == "setup:create":
+            # まず必ずACK（ここで無反応が消える）
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True)
 
-            if not st.get("start") or not st.get("end"):
-                await interaction.followup.send("開始(時/分)・終了(時/分)を選んでね", ephemeral=True)
-                return
-            if not st.get("interval"):
-                await interaction.followup.send("間隔を選んでね", ephemeral=True)
+            try:
+                if not st.get("start") or not st.get("end"):
+                    await interaction.followup.send("開始/終了を選んでね", ephemeral=True)
+                    return
+                if not st.get("interval"):
+                    await interaction.followup.send("間隔を選んでね", ephemeral=True)
+                    return
+
+                # DB保存（あなたの create_panel_record 呼び出し）
+                # ↓ここはあなたの実装に合わせて（前に渡した版ならそのまま）
+                await bot.dm.create_panel_record(
+                    guild_id=interaction.guild_id,
+                    channel_id=interaction.channel_id,
+                    day_key=st["day"],
+                    payload={
+                        "start": st["start"],
+                        "end": st["end"],
+                        "interval": int(st["interval"]),
+                        "title": st.get("title", ""),
+                        "everyone": bool(st.get("everyone", False)),
+                        "notify_channel": st.get("notify_channel") or interaction.channel_id,
+                    }
+                )
+
+                await interaction.followup.send("✅ 作成しました（DB保存）", ephemeral=True)
+
+                # 画面更新は message.edit（responseはもう使ってるから）
+                await interaction.message.edit(
+                    embed=build_setup_embed(st),
+                    view=build_setup_view(st)
+                )
                 return
 
-            if hm_to_minutes(st["start"]) >= hm_to_minutes(st["end"]):
-                await interaction.followup.send("終了は開始より後にしてね", ephemeral=True)
+            except Exception:
+                print("❌ setup:create error")
+                print(traceback.format_exc())
+                await interaction.followup.send("❌ 作成に失敗（ログを見てね）", ephemeral=True)
                 return
 
             day_key = st.get("day", "today")
