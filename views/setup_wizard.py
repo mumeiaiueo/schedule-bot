@@ -55,7 +55,7 @@ class SetupWizardView(discord.ui.View):
         day = st.get("day", "today")
 
         if step == 1:
-            # Row0: day buttons
+            # Row0: day buttons + next（✅ row幅超えない）
             self.add_item(_btn(
                 "今日", "setup:day:today",
                 discord.ButtonStyle.primary if day == "today" else discord.ButtonStyle.secondary,
@@ -66,6 +66,11 @@ class SetupWizardView(discord.ui.View):
                 discord.ButtonStyle.primary if day == "tomorrow" else discord.ButtonStyle.secondary,
                 row=0
             ))
+            self.add_item(_btn(
+                "次へ", "setup:step:2",
+                discord.ButtonStyle.success,
+                row=0
+            ))
 
             # Row1-2: start time (hour/min)
             self.add_item(_hour_select("setup:start_hour", "開始(時) 例:19", row=1))
@@ -74,9 +79,6 @@ class SetupWizardView(discord.ui.View):
             # Row3-4: end time (hour/min)
             self.add_item(_hour_select("setup:end_hour", "終了(時) 例:21", row=3))
             self.add_item(_min_select("setup:end_min", "終了(分) 例:00", row=4))
-
-            # Row4: next（同じrowに置ける）
-            self.add_item(_btn("次へ", "setup:step:2", discord.ButtonStyle.success, row=4))
 
         else:
             # Row0: interval select
