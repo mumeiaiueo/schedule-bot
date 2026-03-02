@@ -36,7 +36,28 @@ class BotApp(discord.Client):
     async def on_ready(self):
         print(f"✅ Logged in as {self.user}")
 
-    async def on_interaction(self, interaction: discord.Interaction):
+    # bot_app.py の on_interaction だけ置き換え
+
+async def on_interaction(self, interaction: discord.Interaction):
+    try:
+        # ボタン/セレクト
+        if interaction.type == discord.InteractionType.component:
+            await handle_component(self, interaction)
+            return
+
+        # モーダル送信
+        if interaction.type == discord.InteractionType.modal_submit:
+            await handle_component(self, interaction)
+            return
+
+        # スラッシュ
+        if interaction.type == discord.InteractionType.application_command:
+            await self.tree._call(interaction)
+            return
+
+    except Exception:
+        print("❌ on_interaction error")
+        print(traceback.format_exc())
         """
         ✅ ここでは defer しない（40060防止）
         ボタン/セレクト/モーダルは bot_interact 側で処理
