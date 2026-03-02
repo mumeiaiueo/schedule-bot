@@ -1,8 +1,7 @@
-# utils/data_manager.py
 import asyncio
 from datetime import datetime
+from utils import db
 from utils.time_utils import JST
-from utils import db  # ← db.sb を見る
 
 class DataManager:
     def _require_db(self):
@@ -12,72 +11,44 @@ class DataManager:
     async def _db(self, fn):
         return await asyncio.to_thread(fn)
 
-    async def create_panel_record(self, guild_id: int, channel_id: int, day_key: str, payload: dict):
+    # ====== panel create ======
+    async def create_panel_record(
+        self,
+        guild_id: int,
+        channel_id: int,
+        day,  # date
+        title: str,
+        start_at: datetime,
+        end_at: datetime,
+        interval_minutes: int,
+        notify_channel_id: int,
+        mention_everyone: bool,
+        created_by: int,
+    ):
+        """
+        panels の列構造に合わせて upsert する
+        on_conflict は (guild_id, day) を想定
+        """
         self._require_db()
 
         def work():
             row = {
-                "guild_id": guild_id,
-                "channel_id": channel_id,
-                "day_key": day_key,
-                "payload": payload,
-                "updated_at": datetime.now(JST).isoformat(),
+                "guild_id": str(guild_id),
+                "channel_id": str(channel_id),
+                "day": day.isoformat(),  # date
+                "title": title or "",
+                "start_at": start_at.isoformat(),
+                "end_at": end_at.isoformat(),
+                "interval_minutes": int(interval_minutes),
+                "notify_channel_id": str(notify_channel_id),
+                "mention_everyone": bool(mention_everyone),
+                "created_by": str(created_by),
+                "updated_at": datetime.now(JST).isoformat(),  # もし列が無いなら消してOK
             }
-            return db.sb.table("panels").upsert(row, on_conflict="guild_id,day_key").execute()
+
+            return db.sb.table("panels").upsert(
+                row,
+                on_conflict="guild_id,day"
+            ).execute()
 
         return await self._db(work)
-
-    async def get_manager_role(self, guild_id: int):
-        self._require_db()
-
-        def work():
-            res = (
-                db.sb.table("guild_settings")
-                .select("manager_role_id")
-                .eq("guild_id", guild_id)
-                .limit(1)
-                .execute()
-            )
-            rows = res.data or []
-            return rows[0]["manager_role_id"] if rows else None
-
-        return await self._db(work)
-
-    def is_manager(self, interaction, manager_role_id: int | None) -> bool:
-        if interaction.user.guild_permissions.administrator:
-            return True
-        if not manager_role_id:
-            return False
-        return any(r.id == int(manager_role_id) for r in getattr(interaction.user, "roles", []))
-
-    # ====== panel create (最小) ======
-    async def create_panel_record(self, guild_id: int, channel_id: int, day_key: str, payload: dict):
-        self._require_db()
-
-        def work():
-            row = {
-                "guild_id": guild_id,
-                "channel_id": channel_id,
-                "day_key": day_key,  # "today" or "tomorrow"
-                "payload": payload,
-                "updated_at": datetime.now(JST).isoformat(),
-            }
-            # ✅ on_conflict は Supabase 側のユニーク制約に合わせる
-            # もし panels に (guild_id, day_key) の unique が無いならエラーになるので注意
-            return db.sb.table("panels").upsert(row, on_conflict="guild_id,day_key").execute()
-
-        return await self._db(work)
-
-    async def reset_day(self, guild_id: int, day_key: str):
-        self._require_db()
-
-        def work():
-            db.sb.table("panels").delete().eq("guild_id", guild_id).eq("day_key", day_key).execute()
-            db.sb.table("slots").delete().eq("guild_id", guild_id).eq("day_key", day_key).execute()
-            return True
-
-        return await self._db(work)
-
-    # ====== 3分前通知（今は空でOK） ======
-    async def send_3min_reminders(self, bot):
-        return
