@@ -3,6 +3,7 @@ import discord
 from views.setup_wizard import build_setup_view, build_setup_embed, TitleModal
 from utils.time_utils import hm_to_minutes
 
+
 async def handle_component(bot, interaction: discord.Interaction):
     try:
         st = bot.wizard_state.get(interaction.user.id)
@@ -18,9 +19,7 @@ async def handle_component(bot, interaction: discord.Interaction):
         cid = data.get("custom_id", "")
         values = data.get("values", [])
 
-        # ======================
-        # ボタン処理
-        # ======================
+        # ===== ボタン =====
 
         if cid.startswith("setup:day:"):
             st["day"] = cid.split(":")[-1]
@@ -71,15 +70,10 @@ async def handle_component(bot, interaction: discord.Interaction):
                 }
             )
 
-            await interaction.followup.send(
-                "✅ 作成（DB保存）しました",
-                ephemeral=True
-            )
+            await interaction.followup.send("✅ 作成しました", ephemeral=True)
             return
 
-        # ======================
-        # セレクト処理
-        # ======================
+        # ===== セレクト =====
 
         if cid == "setup:start_hour" and values:
             st["start_hour"] = values[0]
@@ -106,38 +100,20 @@ async def handle_component(bot, interaction: discord.Interaction):
         if st.get("end_hour") and st.get("end_min"):
             st["end"] = f'{st["end_hour"]}:{st["end_min"]}'
 
-        # ======================
-        # 画面更新
-        # ======================
+        # ===== 画面更新 =====
 
         embed = build_setup_embed(st)
         view = build_setup_view(st)
 
-        # ✅ Interactionに必ず紐づく方法で編集する（反応なし/例外潰し）
-        try:
-            # まだACKしてない → これが一番強い（これ自体がACKになる）
-            if not interaction.response.is_done():
-                await interaction.response.edit_message(embed=embed, view=view)
-                return
-        except Exception:
-            pass
+        if not interaction.response.is_done():
+            await interaction.response.edit_message(embed=embed, view=view)
+        else:
+            await interaction.followup.edit_message(
+                message_id=interaction.message.id,
+                embed=embed,
+                view=view
+            )
 
-        # ここに来た＝すでにACK済み or response.edit_message失敗
-        # message が取れるなら followup.edit_message を試す
-        try:
-            if interaction.message is not None:
-                await interaction.followup.edit_message(
-                    message_id=interaction.message.id,
-                    embed=embed,
-                    view=view
-                )
-                return
-        except Exception:
-            pass
-
-        # 最後の保険：message があるなら通常 edit（ACKにはならないが表示更新だけはできる）
-        try:
-            if interaction.message is not None:
-                await interaction.message.edit(embed=embed, view=view)
-        except Exception:
-            pass
+    except Exception:
+        print("❌ handle_component error")
+        print(traceback.format_exc())
