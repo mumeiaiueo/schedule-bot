@@ -8,13 +8,20 @@ async def handle_component(bot, interaction: discord.Interaction):
         st = bot.wizard_state.get(interaction.user.id)
         if not st:
             if not interaction.response.is_done():
-                await interaction.response.send_message("状態がありません。/setup をやり直してね", ephemeral=True)
+                await interaction.response.send_message(
+                    "状態がありません。/setup をやり直してね",
+                    ephemeral=True
+                )
             return
 
         data = interaction.data or {}
-        cid = data.get("custom_id") or ""
+        cid = data.get("custom_id", "")
+        values = data.get("values", [])
 
-        # ===== buttons =====
+        # ======================
+        # ボタン処理
+        # ======================
+
         if cid.startswith("setup:day:"):
             st["day"] = cid.split(":")[-1]
 
@@ -28,20 +35,18 @@ async def handle_component(bot, interaction: discord.Interaction):
             st["everyone"] = not bool(st.get("everyone", False))
 
         elif cid == "setup:title:open":
-            # ✅ モーダルは defer してると出せないので、ここはそのまま送る
             if not interaction.response.is_done():
                 await interaction.response.send_modal(TitleModal(st))
             return
 
         elif cid == "setup:create":
-            # ✅ ここは重い処理なので defer（1回だけ）
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True)
 
-            # バリデーション
             if not st.get("start") or not st.get("end"):
                 await interaction.followup.send("開始/終了を選んでね", ephemeral=True)
                 return
+
             if not st.get("interval"):
                 await interaction.followup.send("間隔を選んでね", ephemeral=True)
                 return
@@ -65,41 +70,49 @@ async def handle_component(bot, interaction: discord.Interaction):
                     "notify_channel": notify_ch,
                 }
             )
-            await interaction.followup.send("✅ 作成（DB保存）しました。次はパネル表示を追加していくよ", ephemeral=True)
+
+            await interaction.followup.send(
+                "✅ 作成（DB保存）しました",
+                ephemeral=True
+            )
             return
 
-# ===== selects =====
-values = data.get("values", [])
+        # ======================
+        # セレクト処理
+        # ======================
 
-# 時刻（時/分）
-if cid == "setup:start_hour" and values:
-    st["start_hour"] = values[0]
-elif cid == "setup:start_min" and values:
-    st["start_min"] = values[0]
-elif cid == "setup:end_hour" and values:
-    st["end_hour"] = values[0]
-elif cid == "setup:end_min" and values:
-    st["end_min"] = values[0]
+        if cid == "setup:start_hour" and values:
+            st["start_hour"] = values[0]
 
-# hour/min が揃ったら "HH:MM" を組み立て
-if st.get("start_hour") is not None and st.get("start_min") is not None:
-    st["start"] = f"{st['start_hour']}:{st['start_min']}"
-if st.get("end_hour") is not None and st.get("end_min") is not None:
-    st["end"] = f"{st['end_hour']}:{st['end_min']}"
+        elif cid == "setup:start_min" and values:
+            st["start_min"] = values[0]
 
-# 間隔
-if cid == "setup:interval" and values:
-    st["interval"] = values[0]
+        elif cid == "setup:end_hour" and values:
+            st["end_hour"] = values[0]
 
-# 通知チャンネル
-elif cid == "setup:notify_channel" and values:
-    st["notify_channel"] = int(values[0])
+        elif cid == "setup:end_min" and values:
+            st["end_min"] = values[0]
 
-        # ===== 画面更新 =====
+        elif cid == "setup:interval" and values:
+            st["interval"] = values[0]
+
+        elif cid == "setup:notify_channel" and values:
+            st["notify_channel"] = int(values[0])
+
+        # HH:MM 組み立て
+        if st.get("start_hour") and st.get("start_min"):
+            st["start"] = f'{st["start_hour"]}:{st["start_min"]}'
+
+        if st.get("end_hour") and st.get("end_min"):
+            st["end"] = f'{st["end_hour"]}:{st["end_min"]}'
+
+        # ======================
+        # 画面更新
+        # ======================
+
         embed = build_setup_embed(st)
         view = build_setup_view(st)
 
-        # ✅ response未使用なら edit_message が正解（これで「反応なし」減る）
         if not interaction.response.is_done():
             await interaction.response.edit_message(embed=embed, view=view)
         else:
@@ -108,8 +121,12 @@ elif cid == "setup:notify_channel" and values:
     except Exception:
         print("❌ handle_component error")
         print(traceback.format_exc())
+
         try:
             if not interaction.response.is_done():
-                await interaction.response.send_message("内部エラー。ログ見てね", ephemeral=True)
-        except Exception:
+                await interaction.response.send_message(
+                    "内部エラー。ログ見てね",
+                    ephemeral=True
+                )
+        except:
             pass
