@@ -1,24 +1,29 @@
+# utils/data_manager.py
 import asyncio
 from datetime import datetime
-from utils import db
 from utils.time_utils import JST
+from utils import db  # ← db.sb を見る
 
 class DataManager:
     def _require_db(self):
-        # ✅ db.sb を見る（from import sb は禁止）
         if db.sb is None:
             raise RuntimeError("Supabase未接続です（SUPABASE_URL/KEY）")
 
     async def _db(self, fn):
         return await asyncio.to_thread(fn)
 
-    # ====== manager role ======
-    async def set_manager_role(self, guild_id: int, role_id: int | None):
+    async def create_panel_record(self, guild_id: int, channel_id: int, day_key: str, payload: dict):
         self._require_db()
 
         def work():
-            data = {"guild_id": guild_id, "manager_role_id": role_id}
-            return db.sb.table("guild_settings").upsert(data, on_conflict="guild_id").execute()
+            row = {
+                "guild_id": guild_id,
+                "channel_id": channel_id,
+                "day_key": day_key,
+                "payload": payload,
+                "updated_at": datetime.now(JST).isoformat(),
+            }
+            return db.sb.table("panels").upsert(row, on_conflict="guild_id,day_key").execute()
 
         return await self._db(work)
 
